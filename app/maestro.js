@@ -143,10 +143,102 @@
     };
   }
 
+
+  /* ---------- 2b. Formato normalizado: una hoja por tabla, códigos como llaves ---------- */
+  const HOJAS_NORM = ['Despachador', 'Operador', 'Equipo', 'Labor', 'Contratista'];
+  const esNormalizado = (wb) => HOJAS_NORM.every(h => wb.SheetNames.includes(h));
+  const COL_BASE = {
+    Meta: ['version', 'fecha', 'actualizado_por', 'notas'],
+    Contratista: ['codigo', 'nombre', 'activo'], Turno: ['codigo', 'nombre', 'inicio', 'fin'], Guardia: ['codigo'],
+    RangoOperador: ['codigo', 'nombre'], TipoEquipo: ['codigo', 'nombre'], EstadoEquipo: ['codigo', 'nombre', 'disponible'],
+    Mezcla: ['codigo', 'nombre', 'unidad'], TipoLabor: ['codigo', 'nombre'], Sistema: ['codigo'],
+    CategoriaLabor: ['codigo', 'nombre_es', 'nombre_zh'],
+    Despachador: ['codigo', 'nombre', 'turno', 'guardia', 'activo'],
+    Operador: ['codigo', 'nombre', 'rango', 'contratista', 'guardia', 'activo'],
+    Equipo: ['codigo', 'nombre', 'tipo', 'contratista', 'capacidad_m3', 'estado', 'observacion', 'activo'],
+    Labor: ['codigo', 'heading', 'sistema', 'nivel', 'tipo', 'categoria', 'activo'],
+    LaborMes: ['labor', 'periodo', 'contratista', 'seccion_m', 'metros_plan'],
+  };
+  function leerHojasNorm(wb) {
+    const t = {};
+    wb.SheetNames.forEach(n => {
+      if (!COL_BASE[n]) return;                       // hojas desconocidas (Leeme, Control…) se ignoran
+      const filas = XLSX.utils.sheet_to_json(wb.Sheets[n], { defval: null, raw: true });
+      t[n] = filas.map(f => Object.fromEntries(Object.entries(f).map(([k, v]) => [enc(k).toLowerCase(), v])))
+                  .filter(f => !Object.values(f).every(vacio));
+    });
+    return t;
+  }
+  function transformarNorm(t) {
+    const errores = [], avisos = [];
+    const meta = (t.Meta && t.Meta[0]) || {};
+    const version = Number(meta.version);
+    if (!version) errores.push('Meta: falta el número de versión');
+    const cod = (v) => vacio(v) ? null : String(v).trim();
+    const cat = (hoja) => new Map((t[hoja] || []).filter(f => !vacio(f.codigo)).map(f => [cod(f.codigo), f]));
+    const extra = (f, base) => Object.fromEntries(Object.entries(f).filter(([k, v]) => !base.includes(k) && !vacio(v)));
+    const dup = (hoja, lista) => { const s = new Set(); lista.forEach(x => { if (s.has(x)) errores.push(`${hoja}: código repetido ${x}`); s.add(x); }); };
+    const existe = (mapa, v, donde) => { const c = cod(v); if (c && !mapa.has(c)) { errores.push(`${donde}: «${c}» no existe en el catálogo`); return undefined; } return c; };
+
+    const C = cat('Contratista'), TE = cat('TipoEquipo'), ES = cat('EstadoEquipo'), RG = cat('RangoOperador'), CL = cat('CategoriaLabor'), TL = cat('TipoLabor');
+    const contratistas = [...C.values()].map(f => ({ id: cod(f.codigo), nombre: es(f.nombre), activo: activo(f.activo ?? true) }));
+
+    const equipos = [], personas = [], labores = [];
+    (t.Equipo || []).forEach((f, i) => {
+      const id = cod(f.codigo); if (!id) return errores.push(`Equipo fila ${i + 2}: sin código`);
+      const tipo = existe(TE, f.tipo, `Equipo ${id} tipo`) || 'OTRO';
+      const estado = existe(ES, f.estado || 'OPERATIVO', `Equipo ${id} estado`) || 'OPERATIVO';
+      const disp = ES.get(estado) && !/^(no|false|0)$/i.test(String(ES.get(estado).disponible ?? '').trim());
+      equipos.push({ id, nombre: f.nombre || id, tipo, estado, disponible: !!disp, contratista: existe(C, f.contratista, `Equipo ${id} contratista`) || null,
+                     capacidad: f.capacidad_m3, observacion: f.observacion, activo: activo(f.activo ?? true),
+                     extra: extra(f, COL_BASE.Equipo) });
+    });
+    (t.Operador || []).forEach((f, i) => {
+      const id = cod(f.codigo); if (!id) return errores.push(`Operador fila ${i + 2}: ${f.nombre} sin código`);
+      const rol = existe(RG, f.rango, `Operador ${id} rango`);
+      personas.push({ id, nombre: String(f.nombre).trim(), rol, contratista: existe(C, f.contratista, `Operador ${id} contratista`) || null,
+                      guardia: f.guardia || null, turno: null, activo: activo(f.activo ?? true), extra: extra(f, COL_BASE.Operador) });
+    });
+    (t.Despachador || []).forEach((f, i) => {
+      const id = cod(f.codigo); if (!id) return errores.push(`Despachador fila ${i + 2}: ${f.nombre} sin código`);
+      personas.push({ id, nombre: String(f.nombre).trim(), rol: 'DESPACHADOR', contratista: null,
+                      guardia: f.guardia || null, turno: cod(f.turno), activo: activo(f.activo ?? true), extra: extra(f, COL_BASE.Despachador) });
+    });
+    // Último mes con datos de cada labor → contratista / sección / metros plan vigentes
+    const ult = new Map();
+    (t.LaborMes || []).forEach(f => { const k = cod(f.labor); if (!k) return;
+      const a = ult.get(k); if (!a || String(f.periodo) >= String(a.periodo)) ult.set(k, f); });
+    (t.Labor || []).forEach((f, i) => {
+      const id = cod(f.codigo); if (!id) return errores.push(`Labor fila ${i + 2}: sin código`);
+      const m = ult.get(id) || {};
+      const categoria = f.categoria ? existe(CL, f.categoria, `Labor ${id} categoría`) : null;
+      labores.push({ id, heading: cod(f.heading) || id, sistema: f.sistema || id.slice(0, 2), nivel: cod(f.nivel) || id.slice(3, 7),
+        tipo: (cod(f.tipo) || 'DESARROLLO'), categoria: categoria ? (CL.get(categoria).nombre_es || categoria) : null,
+        seccion: m.seccion_m ?? null, metrosPlan: m.metros_plan ?? null, contratista: existe(C, m.contratista, `LaborMes ${id} contratista`) || null,
+        mes: m.periodo ?? null, activo: activo(f.activo ?? true), extra: extra(f, COL_BASE.Labor) });
+      if (f.tipo && !TL.has(cod(f.tipo))) errores.push(`Labor ${id}: tipo «${f.tipo}» no existe en TipoLabor`);
+    });
+    (t.LaborMes || []).forEach(f => { if (cod(f.labor) && !labores.some(l => l.id === cod(f.labor))) avisos.push(`LaborMes: labor «${f.labor}» no está en Labor`); });
+    dup('Equipo', equipos.map(e => e.id)); dup('Despachador/Operador', personas.map(p => p.id)); dup('Labor', labores.map(l => l.id));
+
+    const turnos = (t.Turno || []).map(f => ({ id: cod(f.codigo), nombre: f.nombre, inicio: f.inicio, fin: f.fin }));
+    return {
+      version, fecha: meta.fecha ?? null, responsable: meta.actualizado_por ?? null, notas: meta.notas ?? null,
+      contratistas, equipos, personas, labores, turnos, guardias: (t.Guardia || []).map(f => f.codigo).filter(Boolean),
+      mezclas: (t.Mezcla || []).map(f => ({ id: cod(f.codigo), nombre: f.nombre, unidad: f.unidad })),
+      formato: 'normalizado', errores, avisos,
+    };
+  }
+
   async function leerArchivo(file) {
     const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+    if (esNormalizado(wb)) {
+      const mn = transformarNorm(leerHojasNorm(wb));
+      mn.archivo = file.name;
+      return mn;
+    }
     const ws = wb.Sheets[HOJA];
-    if (!ws) return { errores: [`El archivo no tiene la hoja «${HOJA}». ¿Es el maestro correcto?`], avisos: [] };
+    if (!ws) return { errores: [`El archivo no es un maestro: faltan las hojas ${HOJAS_NORM.join(', ')} (o la hoja «${HOJA}», formato anterior).`], avisos: [] };
     const t = extraerTablas(ws);
     const faltan = OBLIGATORIAS.filter(n => !t[n]);
     if (faltan.length) return { errores: [`Faltan tablas: ${faltan.join(', ')}`], avisos: [] };
@@ -216,11 +308,11 @@
   /* ---------- 5. Listas para los formularios ---------- */
   const listas = (m) => ({
     laboresActivas: m.labores.filter(l => l.activo),
-    equiposDisponibles: m.equipos.filter(e => e.activo && e.estado === 'OPERATIVO'),
+    equiposDisponibles: m.equipos.filter(e => e.activo && (e.disponible ?? e.estado === 'OPERATIVO')),
     conductores: m.personas.filter(p => p.activo && p.rol === 'CONDUCTOR'),
     operadoresRobojet: m.personas.filter(p => p.activo && p.rol === 'OPERADOR_ROBOJET'),
     despachadores: m.personas.filter(p => p.activo && p.rol === 'DESPACHADOR'),
   });
 
-  global.Maestro = { leerArchivo, transformar, extraerTablas, comparar, guardar, cargarGuardado, listas };
+  global.Maestro = { leerArchivo, transformar, transformarNorm, leerHojasNorm, esNormalizado, extraerTablas, comparar, guardar, cargarGuardado, listas };
 })(typeof window !== 'undefined' ? window : globalThis);

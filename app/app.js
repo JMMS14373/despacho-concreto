@@ -78,7 +78,7 @@
 
   /* ---------------- estado ---------------- */
   let M = null;                       // maestro guardado en el celular
-  const E = { vista: 'despachos', filtro: 'TODOS', rmLiberar: null, previa: null, equipo: null };
+  const E = { vista: 'despachos', filtro: 'TODOS', rmLiberar: null, previa: null, equipo: null, cierre: null };
   const lab = (id) => M && M.labores.find(l => l.id === id);
   const per = (id) => M && M.personas.find(p => p.id === id);
   const contrN = (id) => (M && (M.contratistas.find(c => c.id === id) || {}).nombre) || id || '';
@@ -141,6 +141,10 @@
   }
 
   async function ir(vista, extra) {
+    // Si hay una versión nueva esperando, se aplica al pasar a una pantalla sin formulario abierto.
+    const vaAFormulario = vista === 'nueva' || (vista === 'liberar' && extra && extra.rmLiberar);
+    if (typeof pendiente !== 'undefined' && pendiente && !vaAFormulario && aplicarActualizacion(vista)) return;
+    if (vista !== 'maestros') Pin.cerrar();      // el acceso de maestro se cierra al salir de la pantalla
     E.vista = vista;
     Object.assign(E, extra || {});
     encabezado();
@@ -174,7 +178,10 @@
       </div>
       ${vis.length ? `<ul class="lista">${vis.map(itemRem).join('')}</ul>`
         : `<div class="vacio">No hay remisiones ${E.filtro === 'TODOS' ? 'registradas' : 'en este estado'}.</div>`}
+      <div id="panelCierre"></div>
       <div class="barra">
+        <button type="button" class="btn btn-sec" id="cerrarTurno">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg>Cierre</button>
         <button type="button" class="btn btn-sec" id="exportar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 18v2h16v-2"/></svg>Excel</button>
         <button type="button" class="btn btn-pri" style="flex:1" data-ir="nueva">
@@ -182,7 +189,47 @@
       </div>`;
     $$('input[name=filtro]', main).forEach(i => i.addEventListener('change', () => { E.filtro = i.value; vDespachos(main); }));
     $('#exportar', main).addEventListener('click', exportar);
+    $('#cerrarTurno', main).addEventListener('click', () => { E.cierre = E.cierre ? null : cierreInicial(); panelCierre(main); });
+    panelCierre(main);
     $$('[data-cancelar]', main).forEach(b => b.addEventListener('click', () => cancelar(Number(b.dataset.cancelar), main)));
+  }
+  /* ---------- cierre de turno: PDF, Excel o CSV ---------- */
+  function cierreInicial() {
+    const ahora = new Date(), h = ahora.getHours();
+    if (h < 6) { const ayer = new Date(ahora.getTime() - 864e5); return { dia: fechaLocal(ayer).slice(0, 10), turno: 'NOCHE' }; }
+    return { dia: hoy(), turno: h < 18 ? 'DIA' : 'NOCHE' };
+  }
+  async function resumenCierre() {
+    return Cierre.construir({
+      remisiones: await Datos.todas('remisiones'), liberaciones: await Datos.todas('liberaciones'), eventos: await Datos.todas('eventos'),
+      estadosAhora: await estadosEquipos(), maestro: M, mezclaN, guardia: LS.get('guardia', 'A'), dia: E.cierre.dia, turno: E.cierre.turno,
+    });
+  }
+  async function panelCierre(main) {
+    const caja = $('#panelCierre', main);
+    if (!caja) return;
+    if (!E.cierre) { caja.innerHTML = ''; return; }
+    const sum = await resumenCierre(), k = sum.kpi;
+    caja.innerHTML = `<section class="card destacada" aria-label="Cierre de turno">
+      <b>Cierre de turno · 关班</b>
+      <div class="dos">
+        <label class="campo">Fecha<input type="date" id="cDia" value="${esc(E.cierre.dia)}"></label>
+        <label class="campo">Turno<select id="cTurno">${Object.entries(Cierre.TURNOS).map(([v, t]) => `<option value="${v}" ${v === E.cierre.turno ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      </div>
+      <div class="aviso info"><b>${k.viajes} viajes · ${k.m3} m³ despachados</b>
+        <span>${k.recibidos} m³ recibidos · ${k.sinLiberar} sin liberar · ${k.canceladas} canceladas</span>
+        <span style="font-size:12px">Ventana: ${esc(sum.ventana[0].replace('T', ' '))} a ${esc(sum.ventana[1].replace('T', ' '))}</span></div>
+      <div class="barra" style="flex-wrap:wrap">
+        <button type="button" class="btn btn-pri" id="cExcel" style="flex:2">Excel</button>
+        <button type="button" class="btn btn-sec" id="cPdf" style="flex:1">PDF</button>
+        <button type="button" class="btn btn-sec" id="cCsv" style="flex:1">CSV</button></div>
+      <span style="font-size:12px;color:var(--gris)">PDF: en la ventana de impresión elija «Guardar como PDF».</span>
+    </section>`;
+    $('#cDia', caja).addEventListener('change', e => { E.cierre.dia = e.target.value || hoy(); panelCierre(main); });
+    $('#cTurno', caja).addEventListener('change', e => { E.cierre.turno = e.target.value; panelCierre(main); });
+    $('#cExcel', caja).addEventListener('click', async () => { Cierre.excel(await resumenCierre(), XLSX); toast('Excel de cierre generado'); });
+    $('#cCsv', caja).addEventListener('click', async () => { Cierre.csv(await resumenCierre()); toast('CSV de cierre generado'); });
+    $('#cPdf', caja).addEventListener('click', async () => { Cierre.imprimir(await resumenCierre()); });
   }
   function itemRem(r) {
     const [et, cl] = EST_REM[r.estado] || [r.estado, 'e-can'];
@@ -511,17 +558,41 @@
   }
 
   /* ================= 5. MAESTROS ================= */
-  async function vMaestros(main) {
-    const url = LS.get('urlMaestro', '');
-    const guardia = LS.get('guardia', 'A');
-    const L = M ? Maestro.listas(M) : null;
-    main.innerHTML = `
+  const ESTADO_MAESTRO = () => `
       <section class="card" style="background:var(--oscuro);color:#fff;flex-direction:row;align-items:center;gap:12px">
         <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="${M ? '#5FD08A' : '#F2A900'}" stroke-width="2" aria-hidden="true"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M10 18h4"/></svg>
         <div style="display:flex;flex-direction:column">
           <b>${M ? `En este celular: versión ${esc(M.version)}` : 'Sin maestro en este celular'}</b>
           <span style="font-size:13px;color:#C9D2DA">${M ? `Cargado ${esc(M.cargadoEn ? new Date(M.cargadoEn).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '')} · funciona sin señal` : 'Cárguelo con señal, en superficie'}</span>
-        </div></section>
+        </div></section>`;
+
+  async function vMaestros(main) {
+    const url = LS.get('urlMaestro', '');
+    const guardia = LS.get('guardia', 'A');
+    const L = M ? Maestro.listas(M) : null;
+    if (!Pin.autorizado()) {
+      main.innerHTML = `${ESTADO_MAESTRO()}
+        <section class="card" style="align-items:center;text-align:center;gap:10px">
+          <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <b>Carga del maestro protegida</b>
+          <span style="font-size:14px;color:var(--gris)">Para cargar o actualizar el maestro se pide el PIN de maestro.</span>
+          <button type="button" class="btn btn-pri btn-grande" id="pinAbrir">Ingresar PIN · 输入密码</button>
+        </section>
+        <label class="campo">Guardia de este celular
+          <select id="guardia">${['A', 'B', 'C'].map(g => `<option ${g === guardia ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+        <p class="version-app" id="versionApp"></p>`;
+      fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = f ? `App publicada: ${f}` : ''; });
+      $('#guardia', main).addEventListener('change', e => { LS.set('guardia', e.target.value); encabezado(); });
+      $('#pinAbrir', main).addEventListener('click', async () => {
+        const r = await Pin.acceso();
+        if (r === 'reiniciado') { M = null; toast('Maestro borrado de este celular. Cárguelo de nuevo.'); }
+        else if (r === 'sin-https') return toast('Abra la app con la dirección https://', true);
+        if (r === true || r === 'reiniciado') ir('maestros');
+      });
+      return;
+    }
+    main.innerHTML = `
+      ${ESTADO_MAESTRO()}
       <label class="campo">Enlace del maestro en SharePoint / OneDrive
         <input id="url" type="url" inputmode="url" placeholder="https://…" value="${esc(url)}"></label>
       <div class="dos">
@@ -543,7 +614,11 @@
           .map(([n, d, c]) => `<li class="item" style="flex-direction:row;align-items:center"><div style="flex:1"><div class="item-t">${n}</div><div class="item-meta">${esc(d)}</div></div><b style="font-size:24px">${c}</b></li>`).join('')}
       </ul>` : ''}
       <label class="campo">Guardia de este celular
-        <select id="guardia">${['A', 'B', 'C'].map(g => `<option ${g === guardia ? 'selected' : ''}>${g}</option>`).join('')}</select></label>`;
+        <select id="guardia">${['A', 'B', 'C'].map(g => `<option ${g === guardia ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+      <button type="button" class="btn btn-sec" id="pinCambiar">Cambiar PIN de maestro</button>
+      <p class="version-app" id="versionApp"></p>`;
+    fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = f ? `App publicada: ${f}` : ''; });
+    $('#pinCambiar', main).addEventListener('click', async () => { if (await Pin.cambiar()) toast('PIN cambiado'); });
     $('#url', main).addEventListener('change', e => LS.set('urlMaestro', e.target.value.trim()));
     $('#guardia', main).addEventListener('change', e => { LS.set('guardia', e.target.value); encabezado(); });
     $('#abrir', main).addEventListener('click', () => {
@@ -647,12 +722,67 @@
   window.addEventListener('online', red);
   window.addEventListener('offline', red);
 
+  /* ---------------- actualizaciones automáticas desde el repositorio ----------------
+     Al subir archivos nuevos a GitHub, la app lo detecta comparando la fecha/huella de sus
+     archivos y ofrece «Actualizar». No hay que cambiar ningún número de versión a mano. */
+  const ARCH_APP = ['index.html', 'app/app.js', 'app/cierre.js', 'app/maestro.js', 'app/pin.js', 'app/qr.js', 'app/styles.css'];
+  let firmaInicial = null, revisando = false, swReg = null, pendiente = false;
+  const SS = {
+    get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* nada */ } },
+    del(k) { try { sessionStorage.removeItem(k); } catch (e) { /* nada */ } },
+  };
+  // Hay un formulario a medio llenar: no se actualiza para no perder datos.
+  const enCurso = () => E.vista === 'nueva' || (E.vista === 'liberar' && !!E.rmLiberar) || !!E.eqEditar;
+  function aplicarActualizacion(destino) {
+    if (!pendiente) return false;
+    SS.set('vistaTrasActualizar', destino || E.vista);
+    SS.set('actualizada', '1');
+    location.reload();
+    return true;
+  }
+  async function firmaApp() {
+    const partes = await Promise.all(ARCH_APP.map(async (u) => {
+      const r = await fetch(u, { method: 'HEAD', cache: 'no-store' });
+      if (!r.ok) throw new Error('sin respuesta');
+      return r.headers.get('etag') || r.headers.get('last-modified') || r.headers.get('content-length') || '';
+    }));
+    return partes.join('|');
+  }
+  async function fechaApp() {
+    try {
+      const r = await fetch('app/app.js', { method: 'HEAD', cache: 'no-store' });
+      const lm = r.headers.get('last-modified');
+      return lm ? new Date(lm).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : null;
+    } catch (e) { return null; }
+  }
+  async function revisarVersion() {
+    if (revisando || !navigator.onLine || location.protocol === 'file:') return;
+    revisando = true;
+    try {
+      const f = await firmaApp();
+      if (firmaInicial === null) firmaInicial = f;
+      else if (f !== firmaInicial) pendiente = true;
+      if (swReg) swReg.update().catch(() => {});
+    } catch (e) { /* sin señal o servidor no disponible: se revisa luego */ }
+    finally { revisando = false; }
+    // Se aplica sola solo si nadie está llenando un formulario; si no, al terminar.
+    if (pendiente && !enCurso()) aplicarActualizacion();
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') revisarVersion(); });
+  window.addEventListener('online', revisarVersion);
+  setInterval(revisarVersion, 5 * 60 * 1000);
+
   (async function iniciar() {
     red();
     try { M = await Maestro.cargarGuardado() || null; } catch (e) { M = null; }
-    await ir(M ? 'despachos' : 'maestros');
+    const tras = SS.get('vistaTrasActualizar');
+    SS.del('vistaTrasActualizar');
+    await ir(M ? (tras && VISTAS[tras] ? tras : 'despachos') : 'maestros');
+    if (SS.get('actualizada')) { SS.del('actualizada'); toast('App actualizada'); }
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
-      navigator.serviceWorker.register('./sw.js', { scope: './' }).catch(() => {});
+      try { swReg = await navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }); } catch (e) { /* sin SW */ }
     }
+    revisarVersion();
   })();
 })();

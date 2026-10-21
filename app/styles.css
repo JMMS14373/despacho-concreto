@@ -13,8 +13,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 
 /* Encabezado */
 .top { background: var(--oscuro); color: var(--blanco); padding: calc(14px + env(safe-area-inset-top)) 16px 14px; position: sticky; top: 0; z-index: 5; }
-.top-fila { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
-.top-titulo { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.top-fila { display: flex; align-items: center; gap: 10px; }
+.top-titulo { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.top-logo { width: 40px; height: 40px; border-radius: 10px; flex: none; box-shadow: 0 0 0 1px #3C4B57; }
 .top-sub { font-size: 12px; color: #C9D2DA; letter-spacing: .04em; }
 .top h1 { margin: 0; font-size: 24px; font-weight: 700; line-height: 1.15; }
 .red { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #C9D2DA; background: #2C3A45; padding: 4px 10px; border-radius: 12px; white-space: nowrap; }
@@ -133,3 +134,26 @@ dialog .btn { width: 100%; }
 .toast { position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%) translateY(20px); background: var(--tinta); color: var(--blanco); padding: 12px 16px; border-radius: 12px; font-size: 15px; max-width: 90vw; opacity: 0; pointer-events: none; transition: opacity .2s, transform .2s; z-index: 20; }
 .toast.ver { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast.err { background: var(--mal-fg); }
+
+.version-app { font-size: 12px; color: var(--gris); text-align: center; margin-top: 8px; }
+
+/* PIN de maestro */
+.pin { position: fixed; inset: 0; z-index: 40; background: rgba(20, 28, 35, .96); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.pin[hidden] { display: none; }
+.pin-caja { width: min(100%, 360px); color: var(--blanco); display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
+.pin-caja h2 { margin: 0; font-size: 22px; }
+.pin-sub { margin: 0; font-size: 14px; color: #C9D2DA; }
+.pin-puntos { display: flex; gap: 14px; margin: 6px 0; }
+.pin-puntos i { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #C9D2DA; }
+.pin-puntos i.on { background: var(--ambar); border-color: var(--ambar); }
+.pin-msg { min-height: 20px; margin: 0; font-size: 14px; color: #FFB4B4; }
+.pin-teclas { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; width: 100%; }
+.pin-teclas button { min-height: 64px; border-radius: 14px; border: 1px solid #3C4B57; background: #2C3A45; color: var(--blanco); font-size: 26px; font-weight: 600; }
+.pin-teclas button.aux { font-size: 14px; background: transparent; border-color: transparent; }
+.pin-teclas button:active { background: var(--ambar); color: var(--tinta); }
+.pin-teclas button[disabled] { opacity: .35; }
+.pin-olvido { background: none; border: 0; color: #C9D2DA; text-decoration: underline; font-size: 14px; min-height: 40px; }
+.pin-botones { display: flex; gap: 10px; width: 100%; }
+.pin-botones .btn { flex: 1; }
+.pin.sacude .pin-puntos { animation: sacude .3s; }
+@keyframes sacude { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
