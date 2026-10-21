@@ -6,7 +6,7 @@
 const CACHE = 'despacho-concreto';
 const ARCHIVOS = [
   './', './index.html', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png', './apple-touch-icon.png',
-  './app/styles.css', './app/app.js', './app/maestro.js', './app/qr.js',
+  './app/styles.css', './app/app.js', './app/maestro.js', './app/pin.js', './app/cierre.js', './app/qr.js',
   './app/vendor/xlsx.full.min.js', './app/vendor/jsQR.js', './ejemplo/maestro_ejemplo.xlsx',
 ];
 
