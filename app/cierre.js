@@ -20,11 +20,13 @@
 
   const TURNOS = { DIA: 'Día', NOCHE: 'Noche', TODO: 'Jornada completa' };
 
-  /* Ventana de tiempo: el día va de 06:00 a 17:59; la noche de 18:00 a 05:59 del día siguiente. */
+  /* Ventana de tiempo: el día y la noche arrancan en las horas de tblShift del maestro (por defecto 06:00 y 18:00). */
+  const HORA = { dia: '06:00', noche: '18:00' };            // se ajusta con el turno del maestro (tblShift)
+  const config = (h) => { if (h && h.dia) HORA.dia = h.dia; if (h && h.noche) HORA.noche = h.noche; };
   function ventana(dia, turno) {
-    if (turno === 'DIA') return [`${dia}T06:00`, `${dia}T18:00`];
-    if (turno === 'NOCHE') return [`${dia}T18:00`, `${sumar(dia, 1)}T06:00`];
-    return [`${dia}T06:00`, `${sumar(dia, 1)}T06:00`];
+    if (turno === 'DIA') return [`${dia}T${HORA.dia}`, `${dia}T${HORA.noche}`];
+    if (turno === 'NOCHE') return [`${dia}T${HORA.noche}`, `${sumar(dia, 1)}T${HORA.dia}`];
+    return [`${dia}T${HORA.dia}`, `${sumar(dia, 1)}T${HORA.dia}`];
   }
   const dentro = (t, [a, b]) => !!t && t >= a && t < b;
 
@@ -39,7 +41,7 @@
     return [...m.values()].map(x => ({ ...x, m3: r2(x.m3) })).sort((a, b) => b.m3 - a.m3);
   }
 
-  /* d = { remisiones, liberaciones, eventos, estadosAhora (Map), maestro, mezclaN, guardia, dia, turno } */
+  /* d = { remisiones, liberaciones, aplicaciones, eventos, estadosAhora (Map), maestro, mezclaN, guardia, dia, turno } */
   function construir(d) {
     const vent = ventana(d.dia, d.turno);
     const contrN = (id) => ((d.maestro.contratistas || []).find(c => c.id === id) || {}).nombre || id;
@@ -49,19 +51,53 @@
     const sinLiberar = validas.filter(r => r.estado === 'DESPACHADO');
     const libs = d.liberaciones.filter(l => dentro(l.fecha_hora, vent)).sort((a, b) => a.fecha_hora.localeCompare(b.fecha_hora));
     const libDe = new Map(d.liberaciones.map(l => [l.remision_num, l]));
-    const alertas = libs.filter(l => /Recibido .* > despachado|Labor real distinta/.test(l.observaciones || ''))
-      .map(l => ({ remision: l.remision_num, texto: l.observaciones }));
+    // Conciliación por remisión: lo pedido (despacho) contra lo aplicado (registro del operador de Robojet)
+    const apps = (d.aplicaciones || []);
+    const lineasPor = new Map();
+    apps.forEach(a => a.lineas.forEach(l => {
+      const x = lineasPor.get(l.remision) || [];
+      x.push({ m3: Number(l.m3), labor: a.labor, equipo: a.equipo, operador: a.operador, fin: a.fin, firma: !!a.firma_mixer });
+      lineasPor.set(l.remision, x);
+    }));
+    const conc = validas.map(r => {
+      const lib = libDe.get(r.numero) || null;
+      let lin = lineasPor.get(r.numero) || [];
+      // liberaciones anteriores a la 1.4.0 traían la labor y los m³ recibidos
+      if (!lin.length && lib && lib.cantidad_m3 != null && lib.labor)
+        lin = [{ m3: Number(lib.cantidad_m3), labor: lib.labor, equipo: '', operador: lib.operador || '', fin: lib.fecha_hora, firma: !!lib.firma_mandante }];
+      const m3Ap = r2(lin.reduce((s, x) => s + x.m3, 0));
+      const labores = [...new Set(lin.map(x => x.labor))];
+      const detalle = [];
+      let estado;
+      if (!lin.length) estado = 'SIN APLICACIÓN REGISTRADA';
+      else {
+        const dl = labores.some(x => x !== r.labor), dm = Math.abs(m3Ap - Number(r.volumen_m3)) > 0.05;
+        if (dl) detalle.push(`aplicada en ${labores.join(', ')}; pedida para ${r.labor}`);
+        if (dm) detalle.push(`aplicados ${m3Ap} m³; despachados ${r.volumen_m3} m³`);
+        estado = !dl && !dm ? 'CONCILIADA' : dl && dm ? 'LUGAR Y m³ DISTINTOS' : dl ? 'LUGAR DISTINTO' : 'm³ DISTINTOS';
+      }
+      return { r, lib, lineas: lin, m3Aplicados: m3Ap, labores, robojets: [...new Set(lin.map(x => x.equipo).filter(Boolean))],
+        operadores: [...new Set(lin.map(x => x.operador).filter(Boolean))], estado, detalle: detalle.join('; '),
+        ciclo: lib && lib.minutos_ciclo != null ? lib.minutos_ciclo : null, regreso: lib ? lib.fecha_hora : '', firma: lin.some(x => x.firma) };
+    });
+    const concDe = new Map(conc.map(x => [x.r.numero, x]));
+    const alertas = conc.filter(x => x.detalle).map(x => ({ remision: x.r.numero, texto: x.estado + ': ' + x.detalle }));
+    const sinAplicacion = conc.filter(x => x.estado === 'SIN APLICACIÓN REGISTRADA');
+    const appsVentana = apps.filter(a => dentro(a.fin, vent)).sort((a, b) => a.fin.localeCompare(b.fin));
     const eventos = d.eventos.filter(e => dentro(e.momento, vent)).sort((a, b) => a.momento.localeCompare(b.momento));
     const noOperativos = [...d.estadosAhora.entries()].filter(([, s]) => s.estado !== 'OPERATIVO')
       .map(([equipo, s]) => ({ equipo, estado: s.estado, desde: s.desde, motivo: s.motivo }));
     return {
-      dia: d.dia, turno: d.turno, turnoNombre: TURNOS[d.turno], ventana: vent, guardia: d.guardia, mezclaN: d.mezclaN, contrN,
+      dia: d.dia, turno: d.turno, turnoNombre: TURNOS[d.turno], ventana: vent, guardia: d.guardia, mezclaN: d.mezclaN, areaN: d.areaN || ((x) => x || ''), contrN,
       generado: iso(new Date()) + ' ' + pad(new Date().getHours()) + ':' + pad(new Date().getMinutes()),
-      version: d.maestro.version,
-      remisiones: validas, canceladas, sinLiberar, liberaciones: libs, libDe, alertas, eventos, noOperativos,
+      version: d.maestro.version, appVersion: d.appVersion || '—',
+      versionesApp: (() => { const m = new Map(); validas.concat(canceladas).forEach(r => { const v = r.app_version || 'anterior'; m.set(v, (m.get(v) || 0) + 1); });
+        return [...m.entries()].map(([v, n]) => `${v === 'anterior' ? 'anterior a la 1.3.0' : v} (${n})`).join(', '); })(),
+      remisiones: validas, canceladas, sinLiberar, liberaciones: libs, libDe, conc, concDe, sinAplicacion, appsVentana, alertas, eventos, noOperativos,
       kpi: {
         viajes: validas.length, m3: r2(validas.reduce((s, r) => s + Number(r.volumen_m3 || 0), 0)),
-        recibidos: r2(libs.reduce((s, l) => s + Number(l.cantidad_m3 || 0), 0)), liberadas: libs.length,
+        recibidos: r2(conc.reduce((s, x) => s + x.m3Aplicados, 0)), liberadas: libs.length,
+        conciliadas: conc.filter(x => x.estado === 'CONCILIADA').length, conDiferencia: alertas.length, sinAplicacion: sinAplicacion.length,
         sinLiberar: sinLiberar.length, m3SinLiberar: r2(sinLiberar.reduce((s, r) => s + Number(r.volumen_m3 || 0), 0)),
         canceladas: canceladas.length,
       },
@@ -81,34 +117,43 @@
     const tabla = (titulo, filas, col1) => [[titulo], [col1, 'Viajes', 'm³'], ...filas.map(f => [f.nombre, f.viajes, f.m3]), []];
     const resumen = [
       ['CIERRE DE DESPACHO'], [`${s.dia} · ${s.turnoNombre} (${s.ventana[0].replace('T', ' ')} a ${s.ventana[1].replace('T', ' ')})`],
-      [`Guardia ${s.guardia} · Maestro v${s.version} · Generado ${s.generado}`], [],
-      ['Viajes', k.viajes], ['m³ despachados', k.m3], ['m³ recibidos (liberados en el periodo)', k.recibidos],
-      ['Remisiones sin liberar', k.sinLiberar], ['m³ sin liberar', k.m3SinLiberar], ['Remisiones canceladas', k.canceladas], [],
+      [`Guardia ${s.guardia} · Maestro v${s.version} · App v${s.appVersion} · Generado ${s.generado}`],
+      [`Versiones de la app que registraron en el periodo: ${s.versionesApp || '—'}`], [],
+      ['Viajes', k.viajes], ['m³ despachados', k.m3], ['m³ aplicados (registro del Robojet)', k.recibidos], ['Ciclos de Mixer cerrados (liberadas)', k.liberadas],
+      ['Mixers en ruta (sin liberar)', k.sinLiberar], ['m³ en ruta', k.m3SinLiberar],
+      ['Conciliadas', k.conciliadas], ['Con diferencia (lugar o m³)', k.conDiferencia], ['Sin aplicación registrada', k.sinAplicacion], ['Remisiones canceladas', k.canceladas], [],
       ...tabla('Por contratista', s.porContratista, 'Contratista'),
       ...tabla('Por mezcla', s.porMezcla, 'Mezcla'),
       ...tabla('Por labor (10 principales)', s.porLabor, 'Labor'),
-      ['Remisiones sin liberar'], ['Remisión', 'Hora', 'Equipo', 'Labor', 'm³'],
+      ['Mixers en ruta (sin liberar)'], ['Remisión', 'Hora', 'Equipo', 'Labor', 'm³'],
       ...s.sinLiberar.map(r => [r.numero, hora(r.fecha_hora), r.equipo, r.labor, r.volumen_m3]), [],
       ['Equipos no operativos ahora'], ['Equipo', 'Estado', 'Desde', 'Motivo'],
       ...s.noOperativos.map(e => [e.equipo, e.estado, (e.desde || '').replace('T', ' '), e.motivo || '']), [],
-      ['Alertas de liberación'], ['Remisión', 'Detalle'], ...s.alertas.map(a => [a.remision, a.texto]),
+      ['Conciliación: diferencias entre lo pedido y lo aplicado'], ['Remisión', 'Detalle'], ...s.alertas.map(a => [a.remision, a.texto]),
     ];
     const wsR = XLSX.utils.aoa_to_sheet(resumen);
     wsR['!cols'] = [{ wch: 38 }, { wch: 12 }, { wch: 12 }, { wch: 28 }, { wch: 8 }];
     XLSX.utils.book_append_sheet(wb, wsR, 'Resumen');
 
     const det = s.remisiones.concat(s.canceladas).sort((a, b) => a.numero - b.numero).map(r => {
-      const l = s.libDe.get(r.numero) || {};
+      const x = s.concDe.get(r.numero) || {};
       return {
-        'Remisión': r.numero, 'Fecha': r.fecha_hora.slice(0, 10), 'Hora': hora(r.fecha_hora), 'Turno': r.turno, 'Guardia': r.guardia,
-        'Contratista': s.contrN(r.contratista), 'Labor despachada': r.labor, 'Mezcla': s.mezclaN(r.mezcla), 'm³ despachados': r.volumen_m3,
-        'Equipo': r.equipo, 'Conductor': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
-        'Liberada': l.fecha_hora ? l.fecha_hora.replace('T', ' ') : '', 'Labor real': l.labor, 'm³ recibidos': l.cantidad_m3,
-        'Método': l.metodo, 'Min por m³': l.tiempo_min_por_m3, 'Operador': l.operador,
-        'Observaciones despacho': r.observaciones, 'Observaciones liberación': l.observaciones,
+        'Remisión': r.numero, 'Fecha': r.fecha_hora.slice(0, 10), 'Hora salida': hora(r.fecha_hora), 'Turno': r.turno, 'Guardia': r.guardia, 'Área técnica': s.areaN(r.area),
+        'Contratista': s.contrN(r.contratista), 'Labor pedida': r.labor, 'Mezcla': s.mezclaN(r.mezcla), 'Categoría': r.categoria || '', 'm³ despachados': r.volumen_m3,
+        'Equipo (Mixer)': r.equipo, 'Tipo de equipo (operador)': r.tipo_equipo || 'NA', 'Operador de Mixer': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
+        'Regreso a planta': x.regreso ? x.regreso.replace('T', ' ') : '', 'Ciclo Mixer (min)': x.ciclo ?? '',
+        'Labor aplicada': x.labores ? x.labores.join(', ') : '', 'm³ aplicados': x.lineas && x.lineas.length ? x.m3Aplicados : '',
+        'Robojet': x.robojets ? x.robojets.join(', ') : '', 'Operador de Robojet': x.operadores ? x.operadores.join(', ') : '', 'Firma Mixer': x.lineas && x.lineas.length ? (x.firma ? 'Sí' : 'No') : '',
+        'Conciliación': r.estado === 'CANCELADO' ? 'CANCELADA' : (x.estado || ''), 'Detalle conciliación': x.detalle || '',
+        'Versión app': r.app_version || 'anterior', 'Observaciones despacho': r.observaciones, 'Observaciones liberación': (x.lib || {}).observaciones,
       };
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(det.length ? det : [{ 'Remisión': '' }]), 'Remisiones');
+
+    const apl = s.appsVentana.flatMap(a => a.lineas.map(l => ({ 'Robojet': a.equipo, 'Operador de Robojet': a.operador, 'Guardia': a.guardia, 'Labor aplicada': a.labor,
+      'Remisión': l.remision, 'm³ aplicados': l.m3, 'Inicio': a.inicio.replace('T', ' '), 'Fin': a.fin.replace('T', ' '), 'Operador de Mixer (firma)': a.operador_mixer,
+      'Firma': a.firma_mixer ? 'Sí' : 'No', 'Observaciones': a.observaciones, 'Versión app': a.app_version })));
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(apl.length ? apl : [{ 'Robojet': '' }]), 'Aplicaciones Robojet');
 
     const ev = s.eventos.map(e => ({ 'Equipo': e.equipo, 'Desde': e.momento.replace('T', ' '), 'Estado': e.estado, 'Tipo': e.categoria, 'Motivo': e.motivo, 'Registrado por': e.registrado_por }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ev.length ? ev : [{ 'Equipo': '' }]), 'Estados equipos');
@@ -116,8 +161,8 @@
     // Formato del compilado de Geomecánica: se pega tal cual. Tipo de actividad, sub-área y CAPEX/OPEX no se registran en la app todavía.
     const geo = s.remisiones.map(r => ({
       'FECHA': ddmmyy(r.fecha_hora), 'MES': '', 'HORA': hora(r.fecha_hora), 'TURNO': turnoES(r.turno), 'REMISIÓN': r.numero,
-      'USUARIO': s.contrN(r.contratista).toUpperCase().replace(/\s+/g, '_'), 'TIPO ACTIVIDAD': '', 'LUGAR EXACTO': r.labor,
-      'M3': r.volumen_m3, 'MIXER': r.equipo, 'ROBOJET': '', 'SUB-ÁREA': '', 'COMENTARIOS': r.observaciones || '', 'CAPEX/OPEX': '',
+      'USUARIO': s.contrN(r.contratista).toUpperCase().replace(/\s+/g, '_'), 'TIPO ACTIVIDAD': '', 'LUGAR EXACTO': ((s.concDe.get(r.numero) || {}).labores || [])[0] || r.labor,
+      'M3': r.volumen_m3, 'MIXER': r.equipo, 'ROBOJET': ((s.concDe.get(r.numero) || {}).robojets || []).join(', '), 'SUB-ÁREA': '', 'COMENTARIOS': r.observaciones || '', 'CAPEX/OPEX': '',
     }));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(geo.length ? geo : [{ 'FECHA': '' }]), 'Formato Geomecánica');
     XLSX.writeFile(wb, nombreArchivo(s, 'xlsx'));
@@ -125,14 +170,15 @@
 
   /* ---------- CSV: una fila por remisión, con BOM para que Excel respete los acentos ---------- */
   function csv(s) {
-    const cab = ['Remisión', 'Fecha', 'Hora', 'Turno', 'Guardia', 'Contratista', 'Labor despachada', 'Mezcla', 'm3 despachados', 'Equipo', 'Conductor',
-      'Despachador', 'Estado', 'Liberada', 'Labor real', 'm3 recibidos', 'Método', 'Min por m3', 'Operador', 'Observaciones despacho', 'Observaciones liberación'];
+    const cab = ['Remisión', 'Fecha', 'Hora', 'Turno', 'Guardia', 'Área técnica', 'Contratista', 'Labor despachada', 'Mezcla', 'Categoría', 'm3 despachados', 'Equipo (Mixer)', 'Tipo de equipo (operador)', 'Operador de Mixer',
+      'Despachador', 'Estado', 'Regreso a planta', 'Ciclo Mixer (min)', 'Labor aplicada', 'm3 aplicados', 'Robojet', 'Operador de Robojet', 'Conciliación', 'Detalle conciliación', 'Observaciones despacho', 'Observaciones liberación', 'Versión app'];
     const celda = (v) => { const t = v == null ? '' : String(v); return /[",;\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
     const filas = s.remisiones.concat(s.canceladas).sort((a, b) => a.numero - b.numero).map(r => {
-      const l = s.libDe.get(r.numero) || {};
-      return [r.numero, r.fecha_hora.slice(0, 10), hora(r.fecha_hora), r.turno, r.guardia, s.contrN(r.contratista), r.labor, s.mezclaN(r.mezcla), r.volumen_m3,
-        r.equipo, r.conductor, r.despachador, r.estado, l.fecha_hora ? l.fecha_hora.replace('T', ' ') : '', l.labor, l.cantidad_m3, l.metodo,
-        l.tiempo_min_por_m3, l.operador, r.observaciones, l.observaciones].map(celda).join(',');
+      const x = s.concDe.get(r.numero) || {};
+      return [r.numero, r.fecha_hora.slice(0, 10), hora(r.fecha_hora), r.turno, r.guardia, s.areaN(r.area), s.contrN(r.contratista), r.labor, s.mezclaN(r.mezcla), r.categoria || '', r.volumen_m3,
+        r.equipo, r.tipo_equipo || 'NA', r.conductor, r.despachador, r.estado, x.regreso ? x.regreso.replace('T', ' ') : '', x.ciclo ?? '',
+        x.labores ? x.labores.join(' + ') : '', x.lineas && x.lineas.length ? x.m3Aplicados : '', x.robojets ? x.robojets.join(' + ') : '', x.operadores ? x.operadores.join(' + ') : '',
+        r.estado === 'CANCELADO' ? 'CANCELADA' : (x.estado || ''), x.detalle || '', r.observaciones, (x.lib || {}).observaciones, r.app_version || 'anterior'].map(celda).join(',');
     });
     const blob = new Blob(['﻿' + [cab.join(','), ...filas].join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a');
@@ -159,20 +205,21 @@
       .dos { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; } footer { margin-top: 14px; color: #55606B; font-size: 10px; }
     </style></head><body>
       <h1>Cierre de despacho · ${esc(s.dia)} · ${esc(s.turnoNombre)}</h1>
-      <div class="sub">Guardia ${esc(s.guardia)} · ${esc(s.ventana[0].replace('T', ' '))} a ${esc(s.ventana[1].replace('T', ' '))} · Maestro v${esc(s.version)}</div>
+      <div class="sub">Guardia ${esc(s.guardia)} · ${esc(s.ventana[0].replace('T', ' '))} a ${esc(s.ventana[1].replace('T', ' '))} · Maestro v${esc(s.version)} · App v${esc(s.appVersion)}</div>
       <div class="kpis">
         <div class="kpi"><b>${k.viajes}</b><span>Viajes</span></div>
         <div class="kpi"><b>${k.m3}</b><span>m³ despachados</span></div>
-        <div class="kpi"><b>${k.recibidos}</b><span>m³ recibidos (${k.liberadas} liberaciones)</span></div>
-        <div class="kpi ${k.sinLiberar ? 'alerta' : ''}"><b>${k.sinLiberar}</b><span>Sin liberar (${k.m3SinLiberar} m³)</span></div>
+        <div class="kpi"><b>${k.recibidos}</b><span>m³ aplicados (${k.conciliadas} conciliadas)</span></div>
+        <div class="kpi ${k.conDiferencia || k.sinAplicacion ? 'alerta' : ''}"><b>${k.conDiferencia}</b><span>Con diferencia · ${k.sinAplicacion} sin aplicación · ${k.sinLiberar} Mixers en ruta</span></div>
       </div>
       <div class="dos"><div>${tabla('Por contratista', s.porContratista, 'Contratista')}${tabla('Por mezcla', s.porMezcla, 'Mezcla')}</div>
         <div>${tabla('Por labor (10 principales)', s.porLabor, 'Labor')}</div></div>
-      ${lista('Remisiones sin liberar', ['Rm', 'Hora', 'Equipo', 'Labor', 'm³'], s.sinLiberar.map(r => [r.numero, hora(r.fecha_hora), r.equipo, r.labor, r.volumen_m3]))}
+      ${lista('Conciliación: diferencias entre lo pedido y lo aplicado', ['Rm', 'Detalle'], s.alertas.map(a => [a.remision, a.texto]))}
+      ${lista('Sin aplicación registrada', ['Rm', 'Hora', 'Mixer', 'Labor pedida', 'm³'], s.sinAplicacion.map(x => [x.r.numero, hora(x.r.fecha_hora), x.r.equipo, x.r.labor, x.r.volumen_m3]))}
+      ${lista('Mixers en ruta (sin liberar)', ['Rm', 'Hora', 'Equipo', 'Labor', 'm³'], s.sinLiberar.map(r => [r.numero, hora(r.fecha_hora), r.equipo, r.labor, r.volumen_m3]))}
       ${lista('Equipos fuera de servicio ahora', ['Equipo', 'Estado', 'Desde', 'Motivo'], s.noOperativos.map(e => [e.equipo, e.estado, (e.desde || 'según maestro').replace('T', ' '), e.motivo || '']))}
-      ${lista('Alertas de liberación', ['Rm', 'Detalle'], s.alertas.map(a => [a.remision, a.texto]))}
       ${k.canceladas ? `<p class="vacio">Remisiones canceladas en el periodo: ${k.canceladas}</p>` : ''}
-      <footer>Generado ${esc(s.generado)} desde la app de despacho. Datos del equipo donde se registró.</footer>
+      <footer>Generado ${esc(s.generado)} con la app de despacho v${esc(s.appVersion)}. Versiones que registraron en el periodo: ${esc(s.versionesApp || '—')}. Datos del equipo donde se registró.</footer>
     </body></html>`;
   }
 
@@ -185,5 +232,5 @@
     setTimeout(lanzar, 250);
   }
 
-  global.Cierre = { construir, excel, csv, imprimir, pdfHtml, ventana, TURNOS };
+  global.Cierre = { config, construir, excel, csv, imprimir, pdfHtml, ventana, TURNOS };
 })(typeof window !== 'undefined' ? window : globalThis);

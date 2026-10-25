@@ -29,6 +29,10 @@
     'Type': 'tblMachineType',
     'Range': 'tblRange',
     'Dispatcher name': 'tblDispatcher',
+    'Gerencia': 'tblGerencia',
+    'Mezcla': 'tblMezcla',
+    'Categoria': 'tblCategoria',
+    'Categoria M': 'tblCategoriaM',
     'Operator name': 'tblOperator',
     'Machine name': 'tblMachine',
     'Month': 'tblLabor',
@@ -36,9 +40,23 @@
   const OBLIGATORIAS = ['tblMeta', 'tblContractor', 'tblMachine', 'tblOperator', 'tblLabor'];
 
   const ESTADOS = { 'OPERATIVO': 'OPERATIVO', 'INOPERATIVO': 'INOPERATIVO', 'EN MANTENIMIENTO': 'MANTENIMIENTO',
-                    'STANDBY': 'STANDBY', 'BAJA': 'BAJA' };
+                    'MANTENIMIENTO': 'MANTENIMIENTO', 'MANTENIMIENTO PREVENTIVO': 'MANTENIMIENTO',
+                    'MANTENIMIENTO CORRECTIVO': 'MANTENIMIENTO', 'STANDBY': 'STANDBY', 'BAJA': 'BAJA' };
   const TIPOS = { 'MIXER': 'MIXER', 'ROBOJET': 'ROBOJET', 'BOMBA': 'BOMBA', 'OTRO': 'OTRO' };
-  const ROLES = { 'CONDUCTOR MIXER': 'CONDUCTOR', 'OPERADOR ROBOJET': 'OPERADOR_ROBOJET' };
+  // Cargo del maestro (tblRange) → código interno. CONDUCTOR = Operador de Mixer.
+  const ROLES = { 'OPERADOR MIXER': 'CONDUCTOR', 'CONDUCTOR MIXER': 'CONDUCTOR', 'OPERADOR ROBOJET': 'OPERADOR_ROBOJET',
+                  'DESPACHADOR': 'DESPACHADOR' };
+  const CARGOS = { DESPACHADOR: 'Despachador', CONDUCTOR: 'Operador de Mixer', OPERADOR_ROBOJET: 'Operador de Robojet' };
+  // Hora de una celda de tiempo (Date, fracción de día o texto) → 'HH:MM'
+  const hhmm = (v) => {
+    if (v == null || v === '') return null;
+    let min;
+    if (v instanceof Date) min = Math.round(((v.getHours() * 60 + v.getMinutes()) * 60 + v.getSeconds()) / 60);
+    else if (typeof v === 'number') min = Math.round((v % 1) * 1440);
+    else { const m = /(\d{1,2}):(\d{2})/.exec(String(v)); if (!m) return null; min = Number(m[1]) * 60 + Number(m[2]); }
+    min = ((min % 1440) + 1440) % 1440;
+    return `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+  };
 
   // 'Operativo / 运行' → 'OPERATIVO'
   const es = (v) => (v == null || String(v).trim() === '') ? null :
@@ -57,7 +75,8 @@
       if (vacio(cab[c])) { c++; continue; }
       const ini = c;
       while (c < cab.length && !vacio(cab[c])) c++;
-      const headers = cab.slice(ini, c).map(enc);
+      const vistos = {};
+      const headers = cab.slice(ini, c).map(enc).map(h => { vistos[h] = (vistos[h] || 0) + 1; return vistos[h] > 1 ? h + vistos[h] : h; });  // 2.º «Range» → «Range2»
       const nombre = TABLAS[headers[0]];
       if (!nombre) continue;
       const datos = [];
@@ -83,7 +102,8 @@
     const contratistas = (t.tblContractor || []).filter(f => !vacio(f['Code']))
       .map(f => ({ id: String(f['Code']).trim(), nombre: es(f['Contractor']) }));
     const codContr = Object.fromEntries(contratistas.map(c => [c.nombre, c.id]));
-    const contr = (n) => vacio(n) ? null : (codContr[es(n)] || undefined);
+    const sinDato = (n) => vacio(n) || /^(ND|N\/?D|N\.?A\.?|NA|SIN DATO|-+)$/i.test(String(n).trim());
+    const contr = (n) => sinDato(n) ? null : (codContr[es(n)] || undefined);
 
     const equipos = [];
     (t.tblMachine || []).forEach((f, i) => {
@@ -95,6 +115,7 @@
       if (!estado) return errores.push(`Equipo ${id}: estado «${f['Status']}» no válido`);
       const c = contr(f['Contractor']);
       if (c === undefined) return errores.push(`Equipo ${id}: contratista «${f['Contractor']}» no existe`);
+      if (c === null) avisos.push(`Equipo ${id}: contratista sin definir${vacio(f['Contractor']) ? '' : ' («' + String(f['Contractor']).trim() + '»)'}; se usa sin contratista hasta que se asigne`);
       equipos.push({ id, nombre: f['Machine name'], tipo, estado, contratista: c,
                      capacidad: f['Capacity [m³]'], observacion: f['Observation'], activo: activo(f['Active']) });
     });
@@ -104,16 +125,31 @@
       const nombre = f[colNombre];
       if (vacio(nombre) || String(nombre).startsWith('[')) return;
       if (vacio(f['Code'])) return errores.push(`${tabla} fila ${i + 2}: ${nombre} sin código`);
-      const rol = rolFijo || ROLES[es(f['Range'])];
-      if (!rol) return errores.push(`${tabla} fila ${i + 2}: rango «${f['Range']}» no válido`);
-      personas.push({ id: String(f['Code']).trim(), nombre: String(nombre).trim(), rol,
+      // Cargo principal (Range) y, si la persona opera los dos equipos, un segundo cargo (Range2)
+      const cargos = rolFijo ? [rolFijo] : [f['Range'], f['Range2']].filter(v => !vacio(v)).map(v => ROLES[es(v)] || { malo: v });
+      if (!cargos.length) return errores.push(`${tabla} fila ${i + 2}: ${nombre} sin cargo`);
+      const malo = cargos.find(c => c && c.malo !== undefined);
+      if (malo) return errores.push(`${tabla} fila ${i + 2}: rango «${malo.malo}» no válido`);
+      if (cargos.length > 1 && cargos[0] === cargos[1]) errores.push(`${tabla} fila ${i + 2}: ${nombre} tiene el mismo cargo dos veces`);
+      [...new Set(cargos)].forEach(rol => personas.push({ id: String(f['Code']).trim(), nombre: String(nombre).trim(), rol,
                       contratista: contr(f['Contractor']) || null, guardia: f['Guard'] || null,
-                      turno: es(f['Shift']), activo: activo(f['Active']) });
+                      turno: es(f['Shift']), activo: activo(f['Active']), cargo: CARGOS[rol], multiple: cargos.length > 1 }));
     });
     addPersonas('tblOperator', 'Operator name');
     addPersonas('tblDispatcher', 'Dispatcher name', 'DESPACHADOR');
-    const ids = new Set();
-    personas.forEach(p => { if (ids.has(p.id)) errores.push(`Código de persona repetido: ${p.id}`); ids.add(p.id); });
+    // Una misma persona puede tener dos cargos (misma persona, mismo código, dos filas). Error solo si el código
+    // lo usan personas distintas o si se repite el mismo código con el mismo cargo.
+    const vistos = new Map(), porNombre = new Map();
+    const norm = (x) => String(x).normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toUpperCase().replace(/\s+/g, ' ');
+    personas.forEach(p => {
+      const v = vistos.get(p.id);
+      if (!v) vistos.set(p.id, { nombre: norm(p.nombre), nombreOrig: p.nombre, roles: new Set([p.rol]) });
+      else if (v.nombre !== norm(p.nombre)) errores.push(`Código ${p.id} repetido para personas distintas: ${v.nombreOrig} y ${p.nombre}`);
+      else if (v.roles.has(p.rol)) errores.push(`Código ${p.id} (${p.nombre}) repetido con el mismo cargo`);
+      else v.roles.add(p.rol);
+      const n = porNombre.get(norm(p.nombre)) || new Set(); n.add(p.id); porNombre.set(norm(p.nombre), n);
+    });
+    porNombre.forEach((c, n) => { if (c.size > 1) avisos.push(`${n} aparece con dos códigos: ${[...c].join(' y ')}`); });
 
     // Labores: una por Name; si aparece en varios meses gana la última fila
     const lab = new Map(), heads = new Map();
@@ -133,12 +169,25 @@
     const labores = [...lab.values()];
 
     const turnos = (t.tblShift || []).map(f => ({ id: (es(f['Shift']) || '').replace(/ /g, '_'),
-      nombre: f['Shift'], inicio: f['Start'], fin: f['End'] }));
+      nombre: f['Shift'], inicio: hhmm(f['Start']), fin: hhmm(f['End']) }));
+
+    // Área técnica (tblGerencia), mezclas (tblMezcla) y categorías de vaceado (tblCategoria)
+    const areas = (t.tblGerencia || []).filter(f => !vacio(f['Code']) && !vacio(f['Gerencia']))
+      .map(f => ({ id: String(f['Code']).trim(), nombre: String(f['Gerencia']).trim() }));
+    const esVaceado = (n) => /^vac(e|i)ado\b/i.test(norm(n));
+    const mezclas = (t.tblMezcla || []).filter(f => !vacio(f['Mezcla']))
+      .map(f => ({ id: String(f['Mezcla']).trim(), nombre: String(f['Mezcla']).trim(), unidad: vacio(f['Unidades']) ? null : String(f['Unidades']).trim(),
+                   vaceado: esVaceado(f['Mezcla']) }));
+    // Subcategoría del vaceado: tabla tblCategoriaM (o tblCategoria en maestros anteriores)
+    const filasCat = t.tblCategoriaM || t.tblCategoria || [];
+    const categorias = filasCat.map(f => f['Categoria M'] ?? f['Categoria']).filter(v => !vacio(v))
+      .map(v => String(v).trim()).filter(c => c.toUpperCase() !== 'NA');
+    if (mezclas.some(m => m.vaceado) && !categorias.length) errores.push('Hay mezclas de vaceado pero falta la tabla tblCategoriaM (o está vacía).');
 
     return {
       version, fecha: meta['Date'] ?? null, responsable: meta['Updated by'] ?? null, notas: meta['Notes'] ?? null,
-      contratistas, equipos, personas, labores, turnos,
-      guardias: (t.tblGuard || []).map(f => f['Guard']).filter(Boolean),
+      contratistas, equipos, personas, labores, turnos, areas, mezclas, categorias,
+      guardias: [...new Set(personas.map(p => p.guardia).filter(Boolean))].sort(),
       errores, avisos,
     };
   }
@@ -278,16 +327,16 @@
   /* ---------- 4. Comparar con lo guardado (vista previa antes de aplicar) ---------- */
   async function comparar(m) {
     const actual = await cargarGuardado();
-    const dif = (nuevo = [], viejo = [], campos) => {
-      const v = new Map(viejo.map(x => [x.id, x]));
+    const dif = (nuevo = [], viejo = [], campos, clave = (x) => x.id) => {
+      const v = new Map(viejo.map(x => [clave(x), x]));
       const res = { total: nuevo.length, nuevos: [], cambios: [], retirados: [] };
       nuevo.forEach(x => {
-        const y = v.get(x.id);
+        const y = v.get(clave(x));
         if (!y) res.nuevos.push(x.id);
         else if (campos.some(k => String(x[k]) !== String(y[k]))) res.cambios.push(x.id);
-        v.delete(x.id);
+        v.delete(clave(x));
       });
-      res.retirados = [...v.keys()];
+      res.retirados = [...v.values()].map(x => x.id);
       return res;
     };
     const cambiosEstado = (m.equipos || []).flatMap(e => {
@@ -300,7 +349,7 @@
       esMasNueva: !actual || m.version > actual.version,
       labores: dif(m.labores, actual && actual.labores, ['activo', 'contratista', 'categoria']),
       equipos: dif(m.equipos, actual && actual.equipos, ['estado', 'tipo', 'activo', 'contratista']),
-      personas: dif(m.personas, actual && actual.personas, ['rol', 'activo', 'guardia']),
+      personas: dif(m.personas, actual && actual.personas, ['activo', 'guardia', 'nombre'], (x) => x.id + '|' + x.rol),
       cambiosEstado,
     };
   }
@@ -312,7 +361,9 @@
     conductores: m.personas.filter(p => p.activo && p.rol === 'CONDUCTOR'),
     operadoresRobojet: m.personas.filter(p => p.activo && p.rol === 'OPERADOR_ROBOJET'),
     despachadores: m.personas.filter(p => p.activo && p.rol === 'DESPACHADOR'),
+    areas: m.areas || [], mezclas: m.mezclas || [], categorias: m.categorias || [],
+    porCargo: (rol) => m.personas.filter(p => p.activo && p.rol === rol).sort((a, b) => a.nombre.localeCompare(b.nombre)),
   });
 
-  global.Maestro = { leerArchivo, transformar, transformarNorm, leerHojasNorm, esNormalizado, extraerTablas, comparar, guardar, cargarGuardado, listas };
+  global.Maestro = { CARGOS, leerArchivo, transformar, transformarNorm, leerHojasNorm, esNormalizado, extraerTablas, comparar, guardar, cargarGuardado, listas };
 })(typeof window !== 'undefined' ? window : globalThis);

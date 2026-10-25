@@ -157,3 +157,5 @@ dialog .btn { width: 100%; }
 .pin-botones .btn { flex: 1; }
 .pin.sacude .pin-puntos { animation: sacude .3s; }
 @keyframes sacude { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
+[hidden] { display: none !important; }
+input[readonly] { background: #EEF1F4; color: var(--texto, #1B242C); font-weight: 600; }

@@ -2,6 +2,9 @@
 (function () {
   'use strict';
 
+  // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
+  const APP_VERSION = '1.4.0', APP_FECHA = '2026-10-25';
+
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
@@ -16,7 +19,26 @@
   const hoy = () => fechaLocal().slice(0, 10);
   const hora = (iso) => (iso || '').slice(11, 16);
   const num = (v) => Math.round(Number(v || 0) * 100) / 100;
-  const turnoDe = (iso) => { const h = Number((iso || fechaLocal()).slice(11, 13)); return h >= 6 && h < 18 ? 'Día' : 'Noche'; };
+  // Hora de inicio del turno Día y del turno Noche (minutos del día). Se toman de tblShift del maestro; sin maestro: 06:00 y 18:00.
+  const HT = { dia: 360, noche: 1080 };
+  const aMin = (hhmm) => { const m = /^(\d{1,2}):(\d{2})/.exec(hhmm || ''); return m ? Number(m[1]) * 60 + Number(m[2]) : null; };
+  function ajustarTurnos() {
+    const t = (M && M.turnos) || [];
+    const d = t.find(x => /^(DAY|DIA)/.test(x.id || '')), n = t.find(x => /^(NIGHT|NOCHE)/.test(x.id || ''));
+    HT.dia = (d && aMin(d.inicio)) ?? 360; HT.noche = (n && aMin(n.inicio)) ?? 1080;
+    const f = (m) => `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`;
+    if (window.Cierre && Cierre.config) Cierre.config({ dia: f(HT.dia), noche: f(HT.noche) });
+  }
+  const turnoDe = (iso) => { const x = (iso || fechaLocal()); const m = Number(x.slice(11, 13)) * 60 + Number(x.slice(14, 16)); return m >= HT.dia && m < HT.noche ? 'Día' : 'Noche'; };
+  const guardiaActual = () => LS.get('guardia', '') || '—';
+  // Perfil de este celular: DESPACHADOR (todo el despacho) u OPERADOR_ROBOJET (registra su aplicación en el frente, sin señal)
+  const PERFILES = [['DESPACHADOR', 'Despachador'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
+  const perfil = () => LS.get('perfil', 'DESPACHADOR');
+  const VISTAS_PERFIL = { DESPACHADOR: ['despachos', 'nueva', 'liberar', 'flota', 'maestros'], OPERADOR_ROBOJET: ['aplicar', 'maestros'] };
+  function aplicarPerfil() {
+    const ok = VISTAS_PERFIL[perfil()] || VISTAS_PERFIL.DESPACHADOR;
+    $$('.nav button').forEach(b => { b.hidden = !ok.includes(b.dataset.vista); });
+  }
 
   let toastT;
   function toast(msg, error) {
@@ -43,19 +65,27 @@
     const min = Math.max(0, Math.round((Date.now() - new Date(desde).getTime()) / 60000));
     return min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${Math.floor(min / 1440)} d ${Math.floor((min % 1440) / 60)} h`;
   };
-  const mezclaN = (id) => (MEZCLAS.find(m => m.id === id) || {}).n || id;
+  const AREAS = [{ id: 'OPM', nombre: 'Operación Mina' }, { id: 'ST', nombre: 'Servicios Técnicos' }, { id: 'OC', nombre: 'Obras Civiles' }];
+  const CARGOS = [['DESPACHADOR', 'Despachador'], ['CONDUCTOR', 'Operador de Mixer'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
+  // Mezclas: las del maestro (tblMezcla); las de ejemplo solo si el maestro no las trae. El id guardado es el nombre de la mezcla.
+  const listaMezclas = () => (M && M.mezclas && M.mezclas.length) ? M.mezclas.map(m => ({ id: m.id, n: m.nombre, vaceado: m.vaceado })) : MEZCLAS.map(m => ({ ...m, vaceado: /^EST/.test(m.id) }));
+  const listaAreas = () => (M && M.areas && M.areas.length) ? M.areas : AREAS;
+  const areaN = (id) => (listaAreas().find(a => a.id === id) || AREAS.find(a => a.id === id) || {}).nombre || id || '';
+  const mezclaN = (id) => (listaMezclas().find(m => m.id === id) || MEZCLAS.find(m => m.id === id) || {}).n || id;
+  const mezclaTxt = (r) => mezclaN(r.mezcla) + (r.categoria && r.categoria !== 'NA' ? ' · ' + r.categoria : '');
 
   /* ---------------- datos del dispositivo (IndexedDB) ---------------- */
   let _db;
   function db() {
     if (_db) return _db;
     _db = new Promise((ok, mal) => {
-      const r = indexedDB.open('despacho-concreto-datos', 2);
+      const r = indexedDB.open('despacho-concreto-datos', 3);
       r.onupgradeneeded = () => {
         const d = r.result, st = d.objectStoreNames;
         if (!st.contains('remisiones')) d.createObjectStore('remisiones', { keyPath: 'numero' });
         if (!st.contains('liberaciones')) d.createObjectStore('liberaciones', { keyPath: 'remision_num' });
         if (!st.contains('eventos')) d.createObjectStore('eventos', { keyPath: 'id', autoIncrement: true });
+        if (!st.contains('aplicaciones')) d.createObjectStore('aplicaciones', { keyPath: 'id' });
       };
       r.onsuccess = () => ok(r.result);
       r.onerror = () => mal(r.error);
@@ -119,6 +149,7 @@
     despachos: ['PLANTA DE CONCRETO · 混凝土站', 'Despachos del turno'],
     nueva: ['发货单', 'Nueva remisión'],
     liberar: ['混凝土供应验收单', 'Liberación de concreto'],
+    aplicar: ['ROBOJET · 喷浆', 'Aplicación'],
     flota: ['MIXER · ROBOJET · 车队', 'Flota'],
     maestros: ['主数据', 'Maestros'],
   };
@@ -129,8 +160,9 @@
     const d = new Date();
     const f = d.toLocaleDateString('es-CO', { weekday: 'short', day: 'numeric', month: 'short' });
     $('#topChips').innerHTML =
-      `<span>${esc(f)} · ${turnoDe()} · Guardia ${esc(LS.get('guardia', 'A'))}</span>` +
-      `<span>${M ? 'Maestro v' + esc(M.version) : 'Sin maestro'}</span>`;
+      `<span>${esc(f)} · ${turnoDe()} · Guardia ${esc(guardiaActual())}</span>` +
+      `<span>App v${esc(APP_VERSION)} · ${M ? 'Maestro v' + esc(M.version) : 'Sin maestro'}</span>`;
+    aplicarPerfil();
     $$('.nav button').forEach(b => b.toggleAttribute('aria-current', b.dataset.vista === E.vista) || b.removeAttribute('aria-current'));
     $$('.nav button').forEach(b => { if (b.dataset.vista === E.vista) b.setAttribute('aria-current', 'page'); });
   }
@@ -144,6 +176,7 @@
     // Si hay una versión nueva esperando, se aplica al pasar a una pantalla sin formulario abierto.
     const vaAFormulario = vista === 'nueva' || (vista === 'liberar' && extra && extra.rmLiberar);
     if (typeof pendiente !== 'undefined' && pendiente && !vaAFormulario && aplicarActualizacion(vista)) return;
+    if (!(VISTAS_PERFIL[perfil()] || []).includes(vista)) vista = VISTAS_PERFIL[perfil()][0];
     if (vista !== 'maestros') Pin.cerrar();      // el acceso de maestro se cierra al salir de la pantalla
     E.vista = vista;
     Object.assign(E, extra || {});
@@ -182,6 +215,9 @@
       <div class="barra">
         <button type="button" class="btn btn-sec" id="cerrarTurno">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg>Cierre</button>
+        <label class="btn btn-sec carga" style="position:relative" title="Recibir aplicaciones de los operadores de Robojet">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>Recibir
+          <input type="file" id="recibirApl" accept=".json,application/json" multiple></label>
         <button type="button" class="btn btn-sec" id="exportar">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 18v2h16v-2"/></svg>Excel</button>
         <button type="button" class="btn btn-pri" style="flex:1" data-ir="nueva">
@@ -189,6 +225,7 @@
       </div>`;
     $$('input[name=filtro]', main).forEach(i => i.addEventListener('change', () => { E.filtro = i.value; vDespachos(main); }));
     $('#exportar', main).addEventListener('click', exportar);
+    $('#recibirApl', main).addEventListener('change', (e) => { if (e.target.files.length) recibirAplicaciones([...e.target.files], main); });
     $('#cerrarTurno', main).addEventListener('click', () => { E.cierre = E.cierre ? null : cierreInicial(); panelCierre(main); });
     panelCierre(main);
     $$('[data-cancelar]', main).forEach(b => b.addEventListener('click', () => cancelar(Number(b.dataset.cancelar), main)));
@@ -196,13 +233,14 @@
   /* ---------- cierre de turno: PDF, Excel o CSV ---------- */
   function cierreInicial() {
     const ahora = new Date(), h = ahora.getHours();
-    if (h < 6) { const ayer = new Date(ahora.getTime() - 864e5); return { dia: fechaLocal(ayer).slice(0, 10), turno: 'NOCHE' }; }
-    return { dia: hoy(), turno: h < 18 ? 'DIA' : 'NOCHE' };
+    const m = h * 60 + ahora.getMinutes();
+    if (m < HT.dia) { const ayer = new Date(ahora.getTime() - 864e5); return { dia: fechaLocal(ayer).slice(0, 10), turno: 'NOCHE' }; }
+    return { dia: hoy(), turno: m < HT.noche ? 'DIA' : 'NOCHE' };
   }
   async function resumenCierre() {
     return Cierre.construir({
-      remisiones: await Datos.todas('remisiones'), liberaciones: await Datos.todas('liberaciones'), eventos: await Datos.todas('eventos'),
-      estadosAhora: await estadosEquipos(), maestro: M, mezclaN, guardia: LS.get('guardia', 'A'), dia: E.cierre.dia, turno: E.cierre.turno,
+      remisiones: await Datos.todas('remisiones'), liberaciones: await Datos.todas('liberaciones'), aplicaciones: await Datos.todas('aplicaciones'), eventos: await Datos.todas('eventos'),
+      estadosAhora: await estadosEquipos(), maestro: M, appVersion: APP_VERSION, mezclaN, areaN, guardia: guardiaActual(), dia: E.cierre.dia, turno: E.cierre.turno,
     });
   }
   async function panelCierre(main) {
@@ -217,7 +255,8 @@
         <label class="campo">Turno<select id="cTurno">${Object.entries(Cierre.TURNOS).map(([v, t]) => `<option value="${v}" ${v === E.cierre.turno ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
       </div>
       <div class="aviso info"><b>${k.viajes} viajes · ${k.m3} m³ despachados</b>
-        <span>${k.recibidos} m³ recibidos · ${k.sinLiberar} sin liberar · ${k.canceladas} canceladas</span>
+        <span>${k.recibidos} m³ aplicados (Robojet) · ${k.sinLiberar} Mixers en ruta · ${k.canceladas} canceladas</span>
+        <span>Conciliación: ${k.conciliadas} ok · ${k.conDiferencia} con diferencia · ${k.sinAplicacion} sin aplicación registrada</span>
         <span style="font-size:12px">Ventana: ${esc(sum.ventana[0].replace('T', ' '))} a ${esc(sum.ventana[1].replace('T', ' '))}</span></div>
       <div class="barra" style="flex-wrap:wrap">
         <button type="button" class="btn btn-pri" id="cExcel" style="flex:2">Excel</button>
@@ -236,7 +275,7 @@
     return `<li class="item">
       <div class="item-fila"><span class="item-rm">Rm ${esc(r.numero)}</span><span class="estado ${cl}">${et}</span></div>
       <div class="item-t">${esc(r.contratista)} · ${esc(r.labor)}</div>
-      <div class="item-meta"><span>${esc(r.fecha_hora.slice(5, 10))} ${esc(hora(r.fecha_hora))}</span><span>${esc(mezclaN(r.mezcla))}</span>
+      <div class="item-meta"><span>${esc(r.fecha_hora.slice(5, 10))} ${esc(hora(r.fecha_hora))}</span><span>${esc(mezclaTxt(r))}</span>
         <span>${esc(num(r.volumen_m3))} m³</span><span>${esc(r.equipo)}</span></div>
       ${r.estado === 'DESPACHADO' ? `<div class="item-acc">
         <button type="button" class="btn btn-osc btn-peq" data-ir="liberar" data-rm="${esc(r.numero)}">Liberar</button>
@@ -264,6 +303,8 @@
     const opt = (arr, f, vacio) => `<option value="">${vacio}</option>` + arr.map(f).join('');
     main.innerHTML = `
       <form id="fRem" novalidate>
+        <label class="campo">Área técnica · 技术区域
+          <select name="area" required>${opt(listaAreas(), a => `<option value="${esc(a.id)}" ${a.id === LS.get('area', '') ? 'selected' : ''}>${esc(a.nombre)}</option>`, 'Seleccionar…')}</select></label>
         <div class="dos">
           <label class="campo">N.º remisión
             <input name="numero" type="number" inputmode="numeric" min="1" required value="${esc(sig)}"></label>
@@ -275,8 +316,10 @@
         <label class="campo">Labor · 工作面 (solo activas)
           <select name="labor" required></select></label>
         <fieldset><legend>Mezcla · 配合比</legend>
-          <div class="opciones">${MEZCLAS.map((m, i) => `<label class="op"><input type="radio" name="mezcla" value="${m.id}" ${i === 0 ? 'checked' : ''}><span>${m.n}</span></label>`).join('')}</div>
+          <div class="opciones">${listaMezclas().map((m, i) => `<label class="op"><input type="radio" name="mezcla" value="${esc(m.id)}" ${i === 0 ? 'checked' : ''}><span>${esc(m.n)}</span></label>`).join('')}</div>
         </fieldset>
+        <label class="campo" id="campoCat" hidden>Categoría · 类别 (vaceado)
+          <select name="categoria">${opt((L.categorias || []).map(c => ({ id: c })), c => `<option value="${esc(c.id)}">${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
         <div class="campo">Volumen · 体积 (m³)
           <div class="stepper">
             <button type="button" data-paso="-0.5" aria-label="Restar 0,5 m³">−</button>
@@ -291,12 +334,22 @@
           </div>
           <select name="equipo" aria-label="Equipo (lista)">${opt(L.equiposDisponibles, e => `<option value="${esc(e.id)}">${esc(e.id)} · ${esc(e.tipo)}</option>`, 'o elegir de la lista (solo operativos)…')}</select>
         </div>
-        <div class="dos">
-          <label class="campo">Conductor · 司机
-            <select name="conductor">${opt(L.conductores, p => `<option value="${esc(p.id)}">${esc(p.id)} · ${esc(p.nombre)}</option>`, '—')}</select></label>
-          <label class="campo">Despachador
-            <select name="despachador">${opt(L.despachadores, p => `<option value="${esc(p.id)}">${esc(p.id)} · ${esc(p.nombre)}</option>`, '—')}</select></label>
-        </div>
+        <fieldset><legend>Quién registra · 登记人</legend>
+          <div class="dos">
+            <label class="campo">Cargo
+              <select name="cargo">${CARGOS.map(([v, t]) => `<option value="${v}" ${v === LS.get('cargo', 'DESPACHADOR') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+            <label class="campo">Nombre
+              <select name="persona" required></select></label>
+          </div>
+          <div class="dos">
+            <label class="campo">Guardia (automática)
+              <input name="guardia" readonly value="—" aria-live="polite"></label>
+            <label class="campo">Tipo de equipo
+              <select name="tipo_equipo" disabled><option value="NA">NA</option><option value="MIXER">Mixer</option><option value="ROBOJET">Robojet</option></select></label>
+          </div>
+        </fieldset>
+        <label class="campo">Operador de Mixer · 司机
+          <select name="conductor">${opt(L.conductores, p => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(p.id)}</option>`, '—')}</select></label>
         <label class="campo">Observaciones<textarea name="obs" maxlength="300"></textarea></label>
         <div id="errRem"></div>
         <div class="barra"><button type="submit" class="btn btn-pri btn-grande">Despachar · 发货</button></div>
@@ -311,6 +364,35 @@
     };
     llenarLabores();
     f.contratista.addEventListener('change', llenarLabores);
+    // Categoría: solo si la mezcla es de vaceado; en otro caso queda NA
+    const mezclaSel = () => listaMezclas().find(m => m.id === (f.mezcla.value || ($('input[name=mezcla]:checked', f) || {}).value));
+    const ajustaCategoria = () => {
+      const v = !!(mezclaSel() || {}).vaceado, c = $('#campoCat', f);
+      c.hidden = !v; if (!v) f.categoria.value = '';
+    };
+    $$('input[name=mezcla]', f).forEach(r => r.addEventListener('change', ajustaCategoria));
+    ajustaCategoria();
+    // Cargo → nombres de ese cargo → guardia automática (columna Guard del maestro)
+    const llenarPersonas = (previa) => {
+      const ps = L.porCargo(f.cargo.value);
+      f.persona.innerHTML = `<option value="">Seleccionar… (${ps.length})</option>` + ps.map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(p.id)}</option>`).join('');
+      if (previa && ps.some(p => p.id === previa)) f.persona.value = previa;
+      ponGuardia();
+    };
+    const persona = () => L.porCargo(f.cargo.value).find(p => p.id === f.persona.value);
+    function ponGuardia() {
+      const p = persona();
+      f.guardia.value = p ? (p.guardia || 'Sin guardia en el maestro') : '—';
+      if (p && p.guardia) { LS.set('guardia', p.guardia); encabezado(); }
+      if (p && f.cargo.value === 'CONDUCTOR' && !f.conductor.value) f.conductor.value = p.id;
+      // Tipo de equipo: solo se habilita si la persona opera mixer y robojet (dos cargos en el maestro); si no, NA
+      const multi = !!(p && p.multiple), te = f.tipo_equipo;
+      te.disabled = !multi;
+      te.value = multi ? (f.cargo.value === 'OPERADOR_ROBOJET' ? 'ROBOJET' : 'MIXER') : 'NA';
+    }
+    f.cargo.addEventListener('change', () => { LS.set('cargo', f.cargo.value); llenarPersonas(); });
+    f.persona.addEventListener('change', () => { LS.set('persona', f.persona.value); ponGuardia(); });
+    llenarPersonas(LS.get('persona', ''));
     $$('[data-paso]', f).forEach(b => b.addEventListener('click', () => {
       const v = Math.min(12, Math.max(0.5, num(Number(f.volumen_m3.value || 0) + Number(b.dataset.paso))));
       f.volumen_m3.value = v;
@@ -340,7 +422,14 @@
       if (!Number.isInteger(numero) || numero < 1) err.push('Número de remisión inválido.');
       const previa = numero ? await Datos.una('remisiones', numero) : null;
       if (previa && previa.estado !== 'CANCELADO') err.push(`La remisión ${numero} ya existe.`);
+      if (!f.area.value) err.push('Elija el área técnica.');
       if (!f.contratista.value) err.push('Elija la contratista.');
+      const cat = (mezclaSel() || {}).vaceado ? f.categoria.value : 'NA';
+      if (!cat) err.push('Elija la categoría del vaceado.');
+      const pr = persona();
+      if (!pr) err.push('Elija quién registra (cargo y nombre).');
+      else if (!pr.guardia) err.push(`${pr.nombre} no tiene guardia en el maestro.`);
+      if (pr && pr.multiple && !['MIXER', 'ROBOJET'].includes(f.tipo_equipo.value)) err.push('Elija el tipo de equipo (Mixer o Robojet).');
       if (!f.labor.value) err.push('Elija la labor.');
       const vol = Number(f.volumen_m3.value);
       if (!(vol >= 0.5 && vol <= 12)) err.push('El volumen debe estar entre 0,5 y 12 m³.');
@@ -353,12 +442,14 @@
       if (err.length) return;
       const fh = f.fecha_hora.value || fechaLocal();
       await Datos.poner('remisiones', {
-        numero, fecha_hora: fh, contratista: f.contratista.value, labor: f.labor.value,
-        mezcla: f.mezcla.value, volumen_m3: num(vol), equipo: E.equipo,
-        conductor: f.conductor.value || null, despachador: f.despachador.value || null,
-        turno: turnoDe(fh), guardia: LS.get('guardia', 'A'), observaciones: f.obs.value.trim() || null,
-        estado: 'DESPACHADO', maestro_version: M.version, registrado: fechaLocal(),
+        numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value,
+        mezcla: f.mezcla.value, categoria: cat, volumen_m3: num(vol), equipo: E.equipo,
+        conductor: f.conductor.value || null, despachador: pr.rol === 'DESPACHADOR' ? pr.id : null,
+        registrado_por: pr.id, cargo: pr.rol, tipo_equipo: pr.multiple ? f.tipo_equipo.value : 'NA',
+        turno: turnoDe(fh), guardia: pr.guardia, observaciones: f.obs.value.trim() || null,
+        estado: 'DESPACHADO', maestro_version: M.version, app_version: APP_VERSION, registrado: fechaLocal(),
       });
+      LS.set('area', f.area.value);
       toast(`Remisión ${numero} despachada`);
       ir('despachos');
     });
@@ -376,6 +467,8 @@
   }
 
   /* ================= 3. LIBERAR ================= */
+  /* Liberar = el Mixer regresó a planta. Cierra el ciclo del Mixer (salida → regreso).
+     La labor real, los m³ aplicados y la firma llegan después, en el registro de aplicación del operador de Robojet. */
   async function vLiberar(main) {
     const pend = (await Datos.todas('remisiones')).filter(r => r.estado === 'DESPACHADO')
       .sort((a, b) => b.fecha_hora.localeCompare(a.fecha_hora));
@@ -383,74 +476,168 @@
     if (!r) {
       E.rmLiberar = null;
       main.innerHTML = pend.length
-        ? `<p class="titulo-sec">Elija la remisión que llegó al frente (${pend.length})</p>
+        ? `<p class="titulo-sec">¿Qué Mixer regresó a planta? (${pend.length} en ruta)</p>
            <ul class="lista">${pend.map(p => `<li><button type="button" class="item" style="width:100%;text-align:left;border:0" data-ir="liberar" data-rm="${esc(p.numero)}">
-             <div class="item-fila"><span class="item-rm">Rm ${esc(p.numero)}</span><span class="estado e-lib">POR LIBERAR</span></div>
+             <div class="item-fila"><span class="item-rm">Rm ${esc(p.numero)}</span><span class="estado e-lib">EN RUTA</span></div>
              <div class="item-t">${esc(p.contratista)} · ${esc(p.labor)}</div>
-             <div class="item-meta"><span>${esc(hora(p.fecha_hora))}</span><span>${esc(mezclaN(p.mezcla))}</span><span>${esc(num(p.volumen_m3))} m³</span><span>${esc(p.equipo)}</span></div>
+             <div class="item-meta"><span>${esc(hora(p.fecha_hora))}</span><span>${esc(mezclaTxt(p))}</span><span>${esc(num(p.volumen_m3))} m³</span><span>${esc(p.equipo)}</span></div>
            </button></li>`).join('')}</ul>`
-        : `<div class="card vacio">No hay remisiones pendientes por liberar.</div>`;
+        : `<div class="card vacio">No hay Mixers en ruta.</div>`;
       return;
     }
-    const L = Maestro.listas(M);
-    const ops = [...L.operadoresRobojet, ...L.conductores];
     main.innerHTML = `
       <section class="card destacada">
-        <div class="item-fila"><span style="font-size:13px;color:var(--gris)">Remisión</span><span class="estado e-lib">POR LIBERAR</span></div>
+        <div class="item-fila"><span style="font-size:13px;color:var(--gris)">Remisión</span><span class="estado e-lib">EN RUTA</span></div>
         <span class="item-rm" style="font-size:26px">Rm ${esc(r.numero)}</span>
-        <div class="item-meta" style="font-size:14px"><span>${esc(contrN(r.contratista))}</span><span>${esc(mezclaN(r.mezcla))}</span>
-          <span>${esc(num(r.volumen_m3))} m³</span><span>${esc(r.equipo)}</span><span>${esc(r.fecha_hora.replace('T', ' '))}</span></div>
+        <div class="item-meta" style="font-size:14px"><span>${esc(contrN(r.contratista))}</span><span>${esc(mezclaTxt(r))}</span>
+          <span>${esc(num(r.volumen_m3))} m³</span><span>${esc(r.equipo)}</span><span>Salió ${esc(r.fecha_hora.replace('T', ' '))}</span></div>
       </section>
       <form id="fLib" novalidate>
-        <label class="campo">Labor real · 工作面
-          <select name="labor">${L.laboresActivas.sort((a, b) => a.id.localeCompare(b.id)).map(l => `<option value="${esc(l.id)}" ${l.id === r.labor ? 'selected' : ''}>${esc(l.id)}</option>`).join('')}</select></label>
-        <div class="dos">
-          <label class="campo">Recibido (m³)<input name="cantidad" type="number" inputmode="decimal" step="0.1" min="0.1" max="12" value="${esc(r.volumen_m3)}"></label>
-          <label class="campo">Tiempo (min/m³)<input name="tiempo" type="number" inputmode="decimal" min="0" max="240"></label>
-        </div>
-        <fieldset><legend>Método de instalación · 使用方式</legend>
-          <div class="opciones grid3">${METODOS.map(([v, t], i) => `<label class="op"><input type="radio" name="metodo" value="${v}" ${i === 0 ? 'checked' : ''}><span>${t}</span></label>`).join('')}</div>
-        </fieldset>
-        <label class="campo">Operador
-          <select name="operador"><option value="">—</option>${ops.map(p => `<option value="${esc(p.id)}">${esc(p.id)} · ${esc(p.nombre)}</option>`).join('')}</select></label>
-        <fieldset><legend>Firmas · 签名</legend>
-          <div class="firmas">
-            ${[['contratista', 'Contratista'], ['interventoria', 'Interventoría'], ['mandante', 'Mandante']].map(([k, t]) =>
-              `<div class="firma" data-firma="${k}"><span>${t}</span><canvas aria-label="Firma ${t}"></canvas><button type="button">Borrar</button></div>`).join('')}
-          </div></fieldset>
+        <label class="campo">Hora de regreso a planta · 返回时间
+          <input name="regreso" type="datetime-local" required value="${fechaLocal()}"></label>
+        <div class="aviso info"><span>La labor real y los m³ aplicados los registra el operador de Robojet. Se concilian en el cierre.</span></div>
         <label class="campo">Observaciones<textarea name="obs" maxlength="300"></textarea></label>
         <div id="errLib"></div>
         <div class="barra">
           <button type="button" class="btn btn-sec" data-ir="liberar" data-rm="">Volver</button>
-          <button type="submit" class="btn btn-pri" style="flex:1">Liberar · 验收</button></div>
+          <button type="submit" class="btn btn-pri" style="flex:1">Mixer regresó · Liberar</button></div>
       </form>`;
     const f = $('#fLib', main);
-    const firmas = Object.fromEntries($$('[data-firma]', f).map(d => [d.dataset.firma, padFirma(d)]));
     f.addEventListener('submit', async (ev) => {
       ev.preventDefault();
-      const cant = Number(f.cantidad.value), err = [], alertas = [];
-      if (!(cant > 0 && cant <= 12)) err.push('Cantidad recibida inválida.');
-      if (!f.labor.value) err.push('Elija la labor.');
-      if (firmas.mandante.vacia()) err.push('Falta la firma del mandante.');
+      const reg = f.regreso.value || fechaLocal(), err = [];
+      if (reg < r.fecha_hora) err.push('La hora de regreso no puede ser anterior a la salida.');
       $('#errLib', f).innerHTML = err.length ? `<div class="aviso err" role="alert">${err.map(e => `<span>${esc(e)}</span>`).join('')}</div>` : '';
       if (err.length) return;
-      if (cant > r.volumen_m3) alertas.push(`Recibido ${cant} m³ > despachado ${r.volumen_m3} m³`);
-      if (f.labor.value !== r.labor) alertas.push(`Labor real distinta a la despachada (${r.labor})`);
+      const min = Math.round((new Date(reg) - new Date(r.fecha_hora)) / 60000);
       await Datos.poner('liberaciones', {
-        remision_num: r.numero, fecha_hora: fechaLocal(), contratista: r.contratista, labor: f.labor.value,
-        mezcla: r.mezcla, cantidad_m3: num(cant), metodo: f.metodo.value,
-        tiempo_min_por_m3: f.tiempo.value === '' ? null : Number(f.tiempo.value),
-        operador: f.operador.value || null,
-        firma_contratista: firmas.contratista.dato(), firma_interventoria: firmas.interventoria.dato(),
-        firma_mandante: firmas.mandante.dato(),
-        observaciones: [f.obs.value.trim(), ...alertas].filter(Boolean).join('; ') || null,
-        maestro_version: M.version,
+        remision_num: r.numero, fecha_hora: reg, minutos_ciclo: min, contratista: r.contratista, mezcla: r.mezcla,
+        observaciones: f.obs.value.trim() || null, app_version: APP_VERSION, maestro_version: M.version, registrado_por: 'Guardia ' + guardiaActual(),
       });
       r.estado = 'LIBERADO';
       await Datos.poner('remisiones', r);
-      toast(alertas.length ? `Liberada con alerta: ${alertas[0]}` : `Remisión ${r.numero} liberada`, alertas.length > 0);
+      toast(`Rm ${r.numero}: ciclo del Mixer cerrado (${min} min)`);
       ir('despachos', { rmLiberar: null });
     });
+  }
+
+  /* ================= 3b. APLICACIÓN (operador de Robojet, sin señal) ================= */
+  async function vAplicar(main) {
+    const L = Maestro.listas(M);
+    const robojets = M.equipos.filter(e => e.activo && e.tipo === 'ROBOJET');
+    const ops = L.porCargo('OPERADOR_ROBOJET'), mixers = L.porCargo('CONDUCTOR');
+    const aps = (await Datos.todas('aplicaciones')).sort((a, b) => b.fin.localeCompare(a.fin));
+    const hoyAps = aps.filter(a => a.fin.startsWith(hoy()));
+    const porEntregar = aps.filter(a => !a.entregada).length;
+    const lineaHtml = (n) => `<div class="dos linea" data-linea><label class="campo">N.º remisión<input name="rm" type="number" inputmode="numeric" min="1" required></label>
+      <label class="campo">m³ aplicados<input name="m3" type="number" inputmode="decimal" step="0.5" min="0.5" max="12"></label></div>`;
+    main.innerHTML = `
+      <section class="kpis" aria-label="Resumen">
+        <div class="kpi"><span>Aplicaciones hoy</span><b>${hoyAps.length}</b></div>
+        <div class="kpi"><span>m³ hoy</span><b>${num(hoyAps.reduce((s, a) => s + a.lineas.reduce((x, l) => x + l.m3, 0), 0))}</b></div>
+        <div class="kpi ${porEntregar ? 'alerta' : ''}"><span>Por entregar</span><b>${porEntregar}</b></div>
+      </section>
+      <form id="fApl" novalidate>
+        <label class="campo">Robojet · 喷浆台车
+          <select name="equipo" required><option value="">Seleccionar…</option>${robojets.map(e => `<option value="${esc(e.id)}" ${e.id === LS.get('eq_robojet', '') ? 'selected' : ''}>${esc(e.id)}</option>`).join('')}</select></label>
+        <div class="dos">
+          <label class="campo">Operador de Robojet
+            <select name="operador" required><option value="">Seleccionar…</option>${ops.map(p => `<option value="${esc(p.id)}" ${p.id === LS.get('op_robojet', '') ? 'selected' : ''}>${esc(p.nombre)} · ${esc(p.id)}</option>`).join('')}</select></label>
+          <label class="campo">Guardia (automática)<input name="guardia" readonly value="—"></label>
+        </div>
+        <label class="campo">Labor donde se aplicó · 实际工作面
+          <select name="labor" required><option value="">Seleccionar… (${L.laboresActivas.length})</option>${L.laboresActivas.sort((a, b) => a.id.localeCompare(b.id)).map(l => `<option value="${esc(l.id)}">${esc(l.id)}</option>`).join('')}</select></label>
+        <fieldset><legend>Remisiones aplicadas · 使用的发货单</legend>
+          <div id="lineas">${lineaHtml()}</div>
+          <button type="button" class="btn btn-sec btn-peq" id="masRm">+ Otra remisión</button>
+        </fieldset>
+        <label class="campo">Inicio de la aplicación<input name="inicio" type="datetime-local" required value="${fechaLocal()}"></label>
+        <label class="campo">Operador de Mixer que entregó (firma)
+          <select name="mixer" required><option value="">Seleccionar…</option>${mixers.map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(p.id)}</option>`).join('')}</select></label>
+        <div class="firmas"><div class="firma" data-firma="mixer"><span>Firma del operador de Mixer · 司机签名</span><canvas aria-label="Firma del operador de Mixer"></canvas><button type="button">Borrar</button></div></div>
+        <label class="campo">Observaciones<textarea name="obs" maxlength="300"></textarea></label>
+        <div id="errApl"></div>
+        <div class="barra"><button type="submit" class="btn btn-pri btn-grande">Guardar · tarea realizada</button></div>
+      </form>
+      <button type="button" class="btn btn-sec" id="entregar">Entregar en planta (${porEntregar} pendientes)</button>
+      ${hoyAps.length ? `<p class="titulo-sec">Hoy · 今天</p><ul class="lista">${hoyAps.map(a => `<li class="item">
+        <div class="item-fila"><span class="item-rm">${esc(a.labor)}</span><span class="estado ${a.entregada ? 'e-ok' : 'e-lib'}">${a.entregada ? 'ENTREGADA' : 'POR ENTREGAR'}</span></div>
+        <div class="item-meta"><span>${esc(hora(a.inicio))}–${esc(hora(a.fin))}</span><span>Rm ${esc(a.lineas.map(l => l.remision).join(', '))}</span><span>${esc(num(a.lineas.reduce((s, l) => s + l.m3, 0)))} m³</span></div></li>`).join('')}</ul>` : ''}`;
+    const f = $('#fApl', main);
+    const firma = padFirma($('[data-firma]', f));
+    const ponGuardia = () => { const p = ops.find(x => x.id === f.operador.value); f.guardia.value = p ? (p.guardia || 'Sin guardia en el maestro') : '—'; if (p && p.guardia) { LS.set('guardia', p.guardia); encabezado(); } };
+    f.operador.addEventListener('change', () => { LS.set('op_robojet', f.operador.value); ponGuardia(); });
+    f.equipo.addEventListener('change', () => LS.set('eq_robojet', f.equipo.value));
+    ponGuardia();
+    $('#masRm', f).addEventListener('click', () => { $('#lineas', f).insertAdjacentHTML('beforeend', lineaHtml()); });
+    f.addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const err = [];
+      const lineas = $$('[data-linea]', f).map(d => ({ remision: Number($('[name=rm]', d).value), m3: num($('[name=m3]', d).value) }))
+        .filter(l => l.remision || l.m3);
+      if (!f.equipo.value) err.push('Elija el Robojet.');
+      const op = ops.find(x => x.id === f.operador.value);
+      if (!op) err.push('Elija el operador de Robojet.');
+      else if (!op.guardia) err.push(`${op.nombre} no tiene guardia en el maestro.`);
+      if (!f.labor.value) err.push('Elija la labor donde se aplicó.');
+      if (!lineas.length) err.push('Escriba al menos una remisión con sus m³.');
+      if (lineas.some(l => !Number.isInteger(l.remision) || l.remision < 1 || !(l.m3 >= 0.5 && l.m3 <= 12))) err.push('Cada remisión necesita número válido y m³ entre 0,5 y 12.');
+      if (new Set(lineas.map(l => l.remision)).size !== lineas.length) err.push('Hay una remisión repetida en la lista.');
+      if (!f.mixer.value) err.push('Elija el operador de Mixer que entregó.');
+      if (firma.vacia()) err.push('Falta la firma del operador de Mixer.');
+      $('#errApl', f).innerHTML = err.length ? `<div class="aviso err" role="alert">${err.map(e => `<span>${esc(e)}</span>`).join('')}</div>` : '';
+      if (err.length) return;
+      const fin = fechaLocal();
+      await Datos.poner('aplicaciones', {
+        id: `${f.equipo.value}-${fin.replace(/\D/g, '')}-${Math.random().toString(36).slice(2, 6)}`,
+        equipo: f.equipo.value, operador: op.id, guardia: op.guardia, labor: f.labor.value,
+        inicio: f.inicio.value || fin, fin, lineas, operador_mixer: f.mixer.value, firma_mixer: firma.dato(),
+        observaciones: f.obs.value.trim() || null, entregada: false, app_version: APP_VERSION, maestro_version: M.version,
+      });
+      toast('Aplicación guardada · ciclo del Robojet cerrado');
+      ir('aplicar');
+    });
+    $('#entregar', main).addEventListener('click', () => entregarAplicaciones());
+  }
+
+  // Entrega en planta: un archivo (.json) que el despachador recibe en su celular; se comparte o se descarga.
+  async function entregarAplicaciones() {
+    const todas = await Datos.todas('aplicaciones');
+    const pend = todas.filter(a => !a.entregada);
+    if (!pend.length) return toast('No hay aplicaciones por entregar.');
+    const carga = { tipo: 'DC-APLICACIONES', app_version: APP_VERSION, maestro_version: M.version, generado: fechaLocal(), aplicaciones: pend };
+    const eq = [...new Set(pend.map(a => a.equipo))].join('_');
+    const nombre = `aplicaciones_${eq}_${fechaLocal().slice(0, 10)}.json`;
+    const blob = new Blob([JSON.stringify(carga)], { type: 'application/json' });
+    let hecho = false;
+    try {
+      const file = new File([blob], nombre, { type: 'application/json' });
+      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: 'Aplicaciones Robojet' }); hecho = true; }
+    } catch (e) { if (e && e.name === 'AbortError') return; }
+    if (!hecho) {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nombre;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+    for (const a of pend) await Datos.poner('aplicaciones', { ...a, entregada: true });
+    toast(`${pend.length} aplicaciones listas para entregar`);
+    ir('aplicar');
+  }
+
+  // Recepción en planta (despachador): une las aplicaciones de uno o varios celulares; repetir el mismo archivo no duplica.
+  async function recibirAplicaciones(archivos, main) {
+    let nuevas = 0, repetidas = 0;
+    for (const file of archivos) {
+      try {
+        const d = JSON.parse(await file.text());
+        if (d.tipo !== 'DC-APLICACIONES' || !Array.isArray(d.aplicaciones)) throw new Error('formato');
+        for (const a of d.aplicaciones) {
+          if (!a.id || !a.equipo || !Array.isArray(a.lineas)) continue;
+          if (await Datos.una('aplicaciones', a.id)) repetidas++; else { await Datos.poner('aplicaciones', { ...a, entregada: true }); nuevas++; }
+        }
+      } catch (e) { toast(`«${file.name}» no es un archivo de aplicaciones.`, true); }
+    }
+    toast(`${nuevas} aplicaciones recibidas${repetidas ? ` · ${repetidas} ya estaban` : ''}`);
+    vDespachos(main);
   }
   function padFirma(caja) {
     const cv = $('canvas', caja), ctx = cv.getContext('2d');
@@ -527,7 +714,7 @@
       const momento = f.momento.value || fechaLocal();
       await Datos.poner('eventos', {
         equipo: edit.id, momento, estado: nuevo, categoria: nuevo === 'OPERATIVO' ? null : f.categoria.value,
-        motivo: f.motivo.value.trim() || null, registrado_por: 'Guardia ' + LS.get('guardia', 'A'),
+        motivo: f.motivo.value.trim() || null, registrado_por: 'Guardia ' + guardiaActual(),
         maestro_version: M.version,
       });
       toast(`${edit.id}: ${(EST_EQ[nuevo] || [nuevo])[0].toLowerCase()}`);
@@ -566,9 +753,11 @@
           <span style="font-size:13px;color:#C9D2DA">${M ? `Cargado ${esc(M.cargadoEn ? new Date(M.cargadoEn).toLocaleString('es-CO', { dateStyle: 'short', timeStyle: 'short' }) : '')} · funciona sin señal` : 'Cárguelo con señal, en superficie'}</span>
         </div></section>`;
 
+  const selectorPerfil = () => `<label class="campo">Perfil de este celular
+        <select id="perfilSel">${PERFILES.map(([v, t]) => `<option value="${v}" ${v === perfil() ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+  const ligarPerfil = (main) => { const el = $('#perfilSel', main); if (el) el.addEventListener('change', () => { LS.set('perfil', el.value); toast('Perfil: ' + PERFILES.find(p => p[0] === el.value)[1]); ir('maestros'); }); };
   async function vMaestros(main) {
     const url = LS.get('urlMaestro', '');
-    const guardia = LS.get('guardia', 'A');
     const L = M ? Maestro.listas(M) : null;
     if (!Pin.autorizado()) {
       main.innerHTML = `${ESTADO_MAESTRO()}
@@ -578,14 +767,13 @@
           <span style="font-size:14px;color:var(--gris)">Para cargar o actualizar el maestro se pide el PIN de maestro.</span>
           <button type="button" class="btn btn-pri btn-grande" id="pinAbrir">Ingresar PIN · 输入密码</button>
         </section>
-        <label class="campo">Guardia de este celular
-          <select id="guardia">${['A', 'B', 'C'].map(g => `<option ${g === guardia ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+        ${selectorPerfil()}
         <p class="version-app" id="versionApp"></p>`;
-      fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = f ? `App publicada: ${f}` : ''; });
-      $('#guardia', main).addEventListener('change', e => { LS.set('guardia', e.target.value); encabezado(); });
+      ligarPerfil(main);
+      fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = `App v${APP_VERSION} (${APP_FECHA})` + (f ? ` · publicada: ${f}` : ''); });
       $('#pinAbrir', main).addEventListener('click', async () => {
         const r = await Pin.acceso();
-        if (r === 'reiniciado') { M = null; toast('Maestro borrado de este celular. Cárguelo de nuevo.'); }
+        if (r === 'reiniciado') { M = null; ajustarTurnos(); toast('Maestro borrado de este celular. Cárguelo de nuevo.'); }
         else if (r === 'sin-https') return toast('Abra la app con la dirección https://', true);
         if (r === true || r === 'reiniciado') ir('maestros');
       });
@@ -608,19 +796,19 @@
       <ul class="lista">
         ${[['Labores', `${M.labores.filter(l => l.tipo === 'DESARROLLO').length} desarrollo · ${M.labores.filter(l => l.tipo === 'PANEL').length} paneles · ${L.laboresActivas.length} activas`, M.labores.length],
            ['Equipos', `${L.equiposDisponibles.length} operativos`, M.equipos.length],
-           ['Operadores', `${L.conductores.length} conductores · ${L.operadoresRobojet.length} robojet`, L.conductores.length + L.operadoresRobojet.length],
-           ['Despachadores', L.despachadores.length ? 'Activos' : 'Pendiente por cargar', L.despachadores.length],
+           ['Personal activo', `${L.conductores.length} operadores de mixer · ${L.operadoresRobojet.length} de robojet · ${L.despachadores.length} despachadores`, L.conductores.length + L.operadoresRobojet.length + L.despachadores.length],
+           ['Mezclas', `${(M.mezclas || []).length ? (M.mezclas.filter(m => m.vaceado).length + ' de vaceado · ' + (M.categorias || []).length + ' categorías') : 'del catálogo de ejemplo'}`, (M.mezclas || []).length],
+           ['Áreas técnicas', listaAreas().map(a => a.nombre).join(' · '), listaAreas().length],
            ['Contratistas', M.contratistas.map(c => c.id).join(' · '), M.contratistas.length]]
           .map(([n, d, c]) => `<li class="item" style="flex-direction:row;align-items:center"><div style="flex:1"><div class="item-t">${n}</div><div class="item-meta">${esc(d)}</div></div><b style="font-size:24px">${c}</b></li>`).join('')}
       </ul>` : ''}
-      <label class="campo">Guardia de este celular
-        <select id="guardia">${['A', 'B', 'C'].map(g => `<option ${g === guardia ? 'selected' : ''}>${g}</option>`).join('')}</select></label>
+      ${selectorPerfil()}
       <button type="button" class="btn btn-sec" id="pinCambiar">Cambiar PIN de maestro</button>
       <p class="version-app" id="versionApp"></p>`;
-    fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = f ? `App publicada: ${f}` : ''; });
+    fechaApp().then(f => { const el = $('#versionApp', main); if (el) el.textContent = `App v${APP_VERSION} (${APP_FECHA})` + (f ? ` · publicada: ${f}` : ''); });
+    ligarPerfil(main);
     $('#pinCambiar', main).addEventListener('click', async () => { if (await Pin.cambiar()) toast('PIN cambiado'); });
     $('#url', main).addEventListener('change', e => LS.set('urlMaestro', e.target.value.trim()));
-    $('#guardia', main).addEventListener('change', e => { LS.set('guardia', e.target.value); encabezado(); });
     $('#abrir', main).addEventListener('click', () => {
       const u = $('#url', main).value.trim();
       if (!/^https:\/\//i.test(u)) return toast('Pegue primero el enlace https del maestro.', true);
@@ -666,7 +854,7 @@
         $('#descartar', caja).addEventListener('click', () => { E.previa = null; caja.innerHTML = ''; });
         $('#guardar', caja).addEventListener('click', async () => {
           try {
-            M = await Maestro.guardar(E.previa);
+            M = await Maestro.guardar(E.previa); ajustarTurnos();
             E.previa = null;
             toast(`Maestro v${M.version} guardado en el celular`);
             ir('maestros');
@@ -684,17 +872,22 @@
     const lib = await Datos.todas('liberaciones');
     const hR = rem.map(r => ({
       'Remisión': r.numero, 'Fecha hora': r.fecha_hora.replace('T', ' '), 'Turno': r.turno, 'Guardia': r.guardia,
-      'Contratista': r.contratista, 'Labor': r.labor, 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Volumen m3': r.volumen_m3,
+      'Área técnica': areaN(r.area), 'Contratista': r.contratista, 'Labor': r.labor, 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Categoría': r.categoria || '', 'Volumen m3': r.volumen_m3,
       'Equipo': r.equipo, 'Conductor': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
       'Observaciones': r.observaciones, 'Versión maestro': r.maestro_version,
     }));
     const hL = lib.map(l => ({
-      'Remisión': l.remision_num, 'Fecha hora': l.fecha_hora.replace('T', ' '), 'Contratista': l.contratista, 'Labor': l.labor,
+      'Remisión': l.remision_num, 'Fecha hora': l.fecha_hora.replace('T', ' '), 'Contratista': l.contratista, 'Labor': l.labor, 'Ciclo Mixer (min)': l.minutos_ciclo,
       'Mezcla': mezclaN(l.mezcla), 'Cód. mezcla': l.mezcla, 'Recibido m3': l.cantidad_m3, 'Método': l.metodo, 'Min por m3': l.tiempo_min_por_m3,
       'Operador': l.operador, 'Firma contratista': l.firma_contratista ? 'Sí' : 'No',
       'Firma interventoría': l.firma_interventoria ? 'Sí' : 'No', 'Firma mandante': l.firma_mandante ? 'Sí' : 'No',
       'Observaciones': l.observaciones,
     }));
+    const hA = (await Datos.todas('aplicaciones')).flatMap(a => a.lineas.map(l => ({
+      'Id aplicación': a.id, 'Robojet': a.equipo, 'Operador Robojet': a.operador, 'Guardia': a.guardia, 'Labor aplicada': a.labor,
+      'Remisión': l.remision, 'm³ aplicados': l.m3, 'Inicio': a.inicio.replace('T', ' '), 'Fin': a.fin.replace('T', ' '),
+      'Operador Mixer (firma)': a.operador_mixer, 'Firma mixer': a.firma_mixer ? 'Sí' : 'No', 'Observaciones': a.observaciones, 'Versión app': a.app_version,
+    })));
     const hE = (await Datos.todas('eventos')).sort((a, b) => a.momento.localeCompare(b.momento)).map(e => ({
       'Equipo': e.equipo, 'Desde': e.momento.replace('T', ' '), 'Estado': e.estado, 'Categoría': e.categoria,
       'Motivo': e.motivo, 'Registrado por': e.registrado_por, 'Versión maestro': e.maestro_version,
@@ -703,12 +896,13 @@
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hR.length ? hR : [{ 'Remisión': '' }]), 'Remisiones');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hL.length ? hL : [{ 'Remisión': '' }]), 'Liberaciones');
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hE.length ? hE : [{ 'Equipo': '' }]), 'Estados equipos');
+    if (hA.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(hA), 'Aplicaciones');
     XLSX.writeFile(wb, `despachos_${hoy()}.xlsx`);
     toast('Excel generado');
   }
 
   /* ---------------- arranque ---------------- */
-  const VISTAS = { despachos: vDespachos, nueva: vNueva, liberar: vLiberar, flota: vFlota, maestros: vMaestros };
+  const VISTAS = { despachos: vDespachos, nueva: vNueva, liberar: vLiberar, aplicar: vAplicar, flota: vFlota, maestros: vMaestros };
 
   document.addEventListener('click', (e) => {
     const b = e.target.closest('[data-ir]');
@@ -733,7 +927,7 @@
     del(k) { try { sessionStorage.removeItem(k); } catch (e) { /* nada */ } },
   };
   // Hay un formulario a medio llenar: no se actualiza para no perder datos.
-  const enCurso = () => E.vista === 'nueva' || (E.vista === 'liberar' && !!E.rmLiberar) || !!E.eqEditar;
+  const enCurso = () => E.vista === 'nueva' || E.vista === 'aplicar' || (E.vista === 'liberar' && !!E.rmLiberar) || !!E.eqEditar;
   function aplicarActualizacion(destino) {
     if (!pendiente) return false;
     SS.set('vistaTrasActualizar', destino || E.vista);
@@ -776,9 +970,10 @@
   (async function iniciar() {
     red();
     try { M = await Maestro.cargarGuardado() || null; } catch (e) { M = null; }
+    ajustarTurnos();
     const tras = SS.get('vistaTrasActualizar');
     SS.del('vistaTrasActualizar');
-    await ir(M ? (tras && VISTAS[tras] ? tras : 'despachos') : 'maestros');
+    await ir(M ? (tras && VISTAS[tras] ? tras : VISTAS_PERFIL[perfil()][0]) : 'maestros');
     if (SS.get('actualizada')) { SS.del('actualizada'); toast('App actualizada'); }
     if ('serviceWorker' in navigator && location.protocol === 'https:') {
       try { swReg = await navigator.serviceWorker.register('./sw.js', { scope: './', updateViaCache: 'none' }); } catch (e) { /* sin SW */ }
