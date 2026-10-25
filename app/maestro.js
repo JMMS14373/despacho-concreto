@@ -82,7 +82,11 @@
       const datos = [];
       for (let r = 1; r < filas.length; r++) {
         const celdas = (filas[r] || []).slice(ini, c);
-        if (celdas.every(vacio)) break;          // fin de la tabla
+        if (celdas.every(vacio)) {               // fin de la tabla
+          const mas = filas.slice(r + 1).some(fl => !(fl || []).slice(ini, c).every(vacio));
+          if (mas) (tablas.__avisos = tablas.__avisos || []).push(`${nombre}: hay una fila vacía en la fila ${r + 1}; lo que sigue debajo no se leyó. Elimine la fila vacía.`);
+          break;
+        }
         const o = {};
         headers.forEach((h, i) => { o[h] = celdas[i] ?? null; });
         datos.push(o);

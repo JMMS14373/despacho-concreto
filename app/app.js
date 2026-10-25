@@ -3,7 +3,7 @@
   'use strict';
 
   // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
-  const APP_VERSION = '1.4.2', APP_FECHA = '2026-10-25';
+  const APP_VERSION = '1.5.1', APP_FECHA = '2026-10-25';
 
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -31,10 +31,10 @@
   }
   const turnoDe = (iso) => { const x = (iso || fechaLocal()); const m = Number(x.slice(11, 13)) * 60 + Number(x.slice(14, 16)); return m >= HT.dia && m < HT.noche ? 'Día' : 'Noche'; };
   const guardiaActual = () => LS.get('guardia', '') || '—';
-  // Perfil de este celular: DESPACHADOR (todo el despacho) u OPERADOR_ROBOJET (registra su aplicación en el frente, sin señal)
-  const PERFILES = [['DESPACHADOR', 'Despachador'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
+  // Perfil de este celular: DESPACHADOR (todo el despacho), OPERADOR_MIXER (registra remisión y consulta sus despachos) u OPERADOR_ROBOJET (registra su aplicación en el frente, sin señal)
+  const PERFILES = [['DESPACHADOR', 'Despachador'], ['OPERADOR_MIXER', 'Operador de Mixer'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
   const perfil = () => LS.get('perfil', 'DESPACHADOR');
-  const VISTAS_PERFIL = { DESPACHADOR: ['despachos', 'nueva', 'liberar', 'flota', 'maestros'], OPERADOR_ROBOJET: ['aplicar', 'maestros'] };
+  const VISTAS_PERFIL = { DESPACHADOR: ['despachos', 'nueva', 'liberar', 'flota', 'maestros'], OPERADOR_MIXER: ['nueva', 'despachos', 'maestros'], OPERADOR_ROBOJET: ['aplicar', 'maestros'] };
   function aplicarPerfil() {
     const ok = VISTAS_PERFIL[perfil()] || VISTAS_PERFIL.DESPACHADOR;
     $$('.nav button').forEach(b => { b.hidden = !ok.includes(b.dataset.vista); });
@@ -213,19 +213,29 @@
       ${vis.length ? `<ul class="lista">${vis.map(itemRem).join('')}</ul>`
         : `<div class="vacio">No hay remisiones ${E.filtro === 'TODOS' ? 'registradas' : 'en este estado'}.</div>`}
       <div id="panelCierre"></div>
+      <div class="barra" style="flex-wrap:wrap;align-items:center">
+        <span style="font-size:12px;color:var(--gris);flex:1 0 100%">Descargar el turno actual · 下载当班</span>
+        <button type="button" class="btn btn-pri" id="dPdf" style="flex:1">PDF</button>
+        <button type="button" class="btn btn-sec" id="dCsv" style="flex:1">CSV</button>
+        <button type="button" class="btn btn-sec" id="dXls" style="flex:1">Excel</button>
+      </div>
       <div class="barra">
-        <button type="button" class="btn btn-sec" id="cerrarTurno">
+        <button type="button" class="btn btn-sec" id="cerrarTurno" title="Elegir otra fecha o turno">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/></svg>Cierre</button>
         <label class="btn btn-sec carga" style="position:relative" title="Recibir aplicaciones de los operadores de Robojet">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4M7 9l5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>Recibir
           <input type="file" id="recibirApl" accept=".json,application/json" multiple></label>
         <button type="button" class="btn btn-sec" id="exportar">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 18v2h16v-2"/></svg>Excel</button>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12M7 11l5 5 5-5"/><path d="M4 18v2h16v-2"/></svg>Todo</button>
         <button type="button" class="btn btn-pri" style="flex:1" data-ir="nueva">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Nueva remisión</button>
       </div>`;
     $$('input[name=filtro]', main).forEach(i => i.addEventListener('change', () => { E.filtro = i.value; vDespachos(main); }));
     $('#exportar', main).addEventListener('click', exportar);
+    const turnoActual = async (fn) => { const previo = E.cierre; if (!E.cierre) E.cierre = cierreInicial(); try { await fn(await resumenCierre()); } finally { E.cierre = previo; } };
+    $('#dPdf', main).addEventListener('click', () => turnoActual(r => Cierre.imprimir(r)));
+    $('#dCsv', main).addEventListener('click', () => turnoActual(r => { Cierre.csv(r); toast('CSV generado'); }));
+    $('#dXls', main).addEventListener('click', () => turnoActual(r => { Cierre.excel(r, XLSX); toast('Excel generado'); }));
     $('#recibirApl', main).addEventListener('change', (e) => { if (e.target.files.length) recibirAplicaciones([...e.target.files], main); });
     $('#cerrarTurno', main).addEventListener('click', () => { E.cierre = E.cierre ? null : cierreInicial(); panelCierre(main); });
     panelCierre(main);
@@ -337,10 +347,10 @@
         </div>
         <fieldset><legend>Quién registra · 登记人</legend>
           <div class="dos">
-            <label class="campo">Cargo
-              <select name="cargo">${CARGOS.map(([v, t]) => `<option value="${v}" ${v === LS.get('cargo', 'DESPACHADOR') ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
             <label class="campo">Nombre
               <select name="persona" required></select></label>
+            <label class="campo">Cargo (según código)
+              <select name="cargo">${CARGOS.map(([v, t]) => `<option value="${v}" ${v === (perfil() === 'OPERADOR_MIXER' ? 'CONDUCTOR' : LS.get('cargo', 'DESPACHADOR')) ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
           </div>
           <div class="dos">
             <label class="campo">Guardia (automática)
@@ -377,11 +387,24 @@
     };
     $$('input[name=mezcla]', f).forEach(r => r.addEventListener('change', ajustaCategoria));
     ajustaCategoria();
-    // Cargo → nombres de ese cargo → guardia automática (columna Guard del maestro)
+    // Nombre → código → cargo(s), guardia y tipo de equipo (todo sale del maestro: Code, Range, Range2, Guard)
+    const CARGO_TXT = Object.fromEntries(CARGOS);
+    const TIPO_DE = { CONDUCTOR: 'MIXER', OPERADOR_ROBOJET: 'ROBOJET', DESPACHADOR: 'NA' };
+    const todas = (() => { const m = new Map(); CARGOS.forEach(([rol]) => L.porCargo(rol).forEach(p => { const x = m.get(p.id) || { id: p.id, nombre: p.nombre, roles: [] }; if (!x.roles.includes(rol)) x.roles.push(rol); m.set(p.id, x); })); return [...m.values()].sort((a, b) => a.nombre.localeCompare(b.nombre)); })();
+    const fijo = perfil() === 'OPERADOR_MIXER' ? 'CONDUCTOR' : perfil() === 'OPERADOR_ROBOJET' ? 'OPERADOR_ROBOJET' : null;
+    const visibles = () => todas.filter(x => !fijo || x.roles.includes(fijo));
     const llenarPersonas = (previa) => {
-      const ps = L.porCargo(f.cargo.value);
+      const ps = visibles();
       f.persona.innerHTML = `<option value="">Seleccionar… (${ps.length})</option>` + ps.map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(p.id)}</option>`).join('');
       if (previa && ps.some(p => p.id === previa)) f.persona.value = previa;
+      llenarCargo();
+    };
+    const llenarCargo = () => {
+      const x = todas.find(p => p.id === f.persona.value), previo = f.cargo.value;
+      const roles = x ? x.roles : [];
+      f.cargo.innerHTML = roles.length ? roles.map(r => `<option value="${r}">${CARGO_TXT[r]}</option>`).join('') : '<option value="">—</option>';
+      f.cargo.value = roles.includes(previo) ? previo : (fijo && roles.includes(fijo) ? fijo : (roles[0] || ''));
+      f.cargo.disabled = roles.length < 2;
       ponGuardia();
     };
     const persona = () => L.porCargo(f.cargo.value).find(p => p.id === f.persona.value);
@@ -390,13 +413,11 @@
       f.guardia.value = p ? (p.guardia || 'Sin guardia en el maestro') : '—';
       if (p && p.guardia) { LS.set('guardia', p.guardia); encabezado(); }
       if (p && f.cargo.value === 'CONDUCTOR' && !f.conductor.value) f.conductor.value = p.id;
-      // Tipo de equipo: solo se habilita si la persona opera mixer y robojet (dos cargos en el maestro); si no, NA
-      const multi = !!(p && p.multiple), te = f.tipo_equipo;
-      te.disabled = !multi;
-      te.value = multi ? (f.cargo.value === 'OPERADOR_ROBOJET' ? 'ROBOJET' : 'MIXER') : 'NA';
+      // Tipo de equipo automático según el cargo (un operador con dos cargos escoge cuál ejerce hoy)
+      f.tipo_equipo.value = p ? (TIPO_DE[f.cargo.value] || 'NA') : 'NA';
     }
-    f.cargo.addEventListener('change', () => { LS.set('cargo', f.cargo.value); llenarPersonas(); });
-    f.persona.addEventListener('change', () => { LS.set('persona', f.persona.value); ponGuardia(); });
+    f.cargo.addEventListener('change', () => { LS.set('cargo', f.cargo.value); ponGuardia(); });
+    f.persona.addEventListener('change', () => { LS.set('persona', f.persona.value); llenarCargo(); });
     llenarPersonas(LS.get('persona', ''));
     $$('[data-paso]', f).forEach(b => b.addEventListener('click', () => {
       const v = Math.min(12, Math.max(0.5, num(Number(f.volumen_m3.value || 0) + Number(b.dataset.paso))));
@@ -434,7 +455,6 @@
       const pr = persona();
       if (!pr) err.push('Elija quién registra (cargo y nombre).');
       else if (!pr.guardia) err.push(`${pr.nombre} no tiene guardia en el maestro.`);
-      if (pr && pr.multiple && !['MIXER', 'ROBOJET'].includes(f.tipo_equipo.value)) err.push('Elija el tipo de equipo (Mixer o Robojet).');
       if (!f.labor.value) err.push('Elija la labor.');
       const vol = Number(f.volumen_m3.value);
       if (!(vol >= 0.5 && vol <= 12)) err.push('El volumen debe estar entre 0,5 y 12 m³.');
@@ -450,7 +470,7 @@
         numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value,
         mezcla: f.mezcla.value, categoria: cat, volumen_m3: num(vol), equipo: E.equipo,
         conductor: f.conductor.value || null, despachador: pr.rol === 'DESPACHADOR' ? pr.id : null,
-        registrado_por: pr.id, cargo: pr.rol, tipo_equipo: pr.multiple ? f.tipo_equipo.value : 'NA',
+        registrado_por: pr.id, cargo: pr.rol, tipo_equipo: f.tipo_equipo.value || 'NA',
         turno: turnoDe(fh), guardia: pr.guardia, observaciones: f.obs.value.trim() || null,
         estado: 'DESPACHADO', maestro_version: M.version, app_version: APP_VERSION, registrado: fechaLocal(),
       });
