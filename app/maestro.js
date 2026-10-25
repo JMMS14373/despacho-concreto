@@ -174,7 +174,7 @@
     // Área técnica (tblGerencia), mezclas (tblMezcla) y categorías de vaceado (tblCategoria)
     const areas = (t.tblGerencia || []).filter(f => !vacio(f['Code']) && !vacio(f['Gerencia']))
       .map(f => ({ id: String(f['Code']).trim(), nombre: String(f['Gerencia']).trim() }));
-    const esVaceado = (n) => /^vac(e|i)ado\b/i.test(norm(n));
+    const esVaceado = (n) => /vac(e|i)ado/i.test(norm(n));
     const mezclas = (t.tblMezcla || []).filter(f => !vacio(f['Mezcla']))
       .map(f => ({ id: String(f['Mezcla']).trim(), nombre: String(f['Mezcla']).trim(), unidad: vacio(f['Unidades']) ? null : String(f['Unidades']).trim(),
                    vaceado: esVaceado(f['Mezcla']) }));

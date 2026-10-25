@@ -3,7 +3,7 @@
   'use strict';
 
   // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
-  const APP_VERSION = '1.4.0', APP_FECHA = '2026-10-25';
+  const APP_VERSION = '1.4.2', APP_FECHA = '2026-10-25';
 
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -54,6 +54,7 @@
     { id: 'MZ-LAN-4000', n: 'Lanzado 4000' }, { id: 'MZ-EST-3000', n: '3000 PSI' },
     { id: 'MZ-EST-4000', n: '4000 PSI' }, { id: 'MZ-EST-5000', n: '5000 PSI' }, { id: 'MZ-MR-4', n: 'MR 4 MPa' },
   ];
+  const CATEG_BASE = ['Muro', 'Losa comedor', 'Losa refugio', 'Losa SAM', 'Cuneta', 'NA'];
   const METODOS = [['ROBOJET', 'Robojet'], ['GRAVEDAD', 'Gravedad'], ['AUTOBOMBA', 'Autobomba'],
     ['BOMBA_ESTACIONARIA', 'B. estacionaria'], ['GRUA_BACHA', 'Grúa-bacha'], ['TRASIEGO', 'Trasiego'], ['OTROS', 'Otros']];
   const EST_REM = { DESPACHADO: ['POR LIBERAR', 'e-lib'], LIBERADO: ['LIBERADO', 'e-ok'], CANCELADO: ['CANCELADO', 'e-can'] };
@@ -68,7 +69,7 @@
   const AREAS = [{ id: 'OPM', nombre: 'Operación Mina' }, { id: 'ST', nombre: 'Servicios Técnicos' }, { id: 'OC', nombre: 'Obras Civiles' }];
   const CARGOS = [['DESPACHADOR', 'Despachador'], ['CONDUCTOR', 'Operador de Mixer'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
   // Mezclas: las del maestro (tblMezcla); las de ejemplo solo si el maestro no las trae. El id guardado es el nombre de la mezcla.
-  const listaMezclas = () => (M && M.mezclas && M.mezclas.length) ? M.mezclas.map(m => ({ id: m.id, n: m.nombre, vaceado: m.vaceado })) : MEZCLAS.map(m => ({ ...m, vaceado: /^EST/.test(m.id) }));
+  const listaMezclas = () => (M && M.mezclas && M.mezclas.length) ? M.mezclas.map(m => ({ id: m.id, n: m.nombre, vaceado: m.vaceado })) : MEZCLAS.map(m => ({ ...m, vaceado: /-EST-/.test(m.id) }));
   const listaAreas = () => (M && M.areas && M.areas.length) ? M.areas : AREAS;
   const areaN = (id) => (listaAreas().find(a => a.id === id) || AREAS.find(a => a.id === id) || {}).nombre || id || '';
   const mezclaN = (id) => (listaMezclas().find(m => m.id === id) || MEZCLAS.find(m => m.id === id) || {}).n || id;
@@ -318,8 +319,8 @@
         <fieldset><legend>Mezcla · 配合比</legend>
           <div class="opciones">${listaMezclas().map((m, i) => `<label class="op"><input type="radio" name="mezcla" value="${esc(m.id)}" ${i === 0 ? 'checked' : ''}><span>${esc(m.n)}</span></label>`).join('')}</div>
         </fieldset>
-        <label class="campo" id="campoCat" hidden>Categoría · 类别 (vaceado)
-          <select name="categoria">${opt((L.categorias || []).map(c => ({ id: c })), c => `<option value="${esc(c.id)}">${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
+        <label class="campo" id="campoCat">Categoría · 类别 (solo vaceado)
+          <select name="categoria">${opt((L.categorias && L.categorias.length ? L.categorias : CATEG_BASE).map(c => ({ id: c })), c => `<option value="${esc(c.id)}">${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
         <div class="campo">Volumen · 体积 (m³)
           <div class="stepper">
             <button type="button" data-paso="-0.5" aria-label="Restar 0,5 m³">−</button>
@@ -368,7 +369,11 @@
     const mezclaSel = () => listaMezclas().find(m => m.id === (f.mezcla.value || ($('input[name=mezcla]:checked', f) || {}).value));
     const ajustaCategoria = () => {
       const v = !!(mezclaSel() || {}).vaceado, c = $('#campoCat', f);
-      c.hidden = !v; if (!v) f.categoria.value = '';
+      f.categoria.disabled = !v;
+      if (!v) { f.categoria.innerHTML = '<option value="">NA (automático)</option>'; f.categoria.value = ''; }
+      else if (f.categoria.options.length < 2 || f.categoria.options[0].textContent.startsWith('NA')) {
+        f.categoria.innerHTML = '<option value="">Seleccionar…</option>' + (L.categorias && L.categorias.length ? L.categorias : CATEG_BASE).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+      }
     };
     $$('input[name=mezcla]', f).forEach(r => r.addEventListener('change', ajustaCategoria));
     ajustaCategoria();
