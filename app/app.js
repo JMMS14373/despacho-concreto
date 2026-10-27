@@ -3,7 +3,7 @@
   'use strict';
 
   // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
-  const APP_VERSION = '1.5.2', APP_FECHA = '2026-10-25';
+  const APP_VERSION = '1.5.4', APP_FECHA = '2026-10-25';
 
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -55,6 +55,7 @@
     { id: 'MZ-EST-4000', n: '4000 PSI' }, { id: 'MZ-EST-5000', n: '5000 PSI' }, { id: 'MZ-MR-4', n: 'MR 4 MPa' },
   ];
   const CATEG_BASE = ['Muro', 'Losa comedor', 'Losa refugio', 'Losa SAM', 'Cuneta', 'NA'];
+  const SOLICITANTES = ['SAM temas especiales', 'Obras civiles'];
   const METODOS = [['ROBOJET', 'Robojet'], ['GRAVEDAD', 'Gravedad'], ['AUTOBOMBA', 'Autobomba'],
     ['BOMBA_ESTACIONARIA', 'B. estacionaria'], ['GRUA_BACHA', 'Grúa-bacha'], ['TRASIEGO', 'Trasiego'], ['OTROS', 'Otros']];
   const EST_REM = { DESPACHADO: ['POR LIBERAR', 'e-lib'], LIBERADO: ['LIBERADO', 'e-ok'], CANCELADO: ['CANCELADO', 'e-can'] };
@@ -314,6 +315,8 @@
     const opt = (arr, f, vacio) => `<option value="">${vacio}</option>` + arr.map(f).join('');
     main.innerHTML = `
       <form id="fRem" novalidate>
+        <label class="campo">Solicitante · 申请方
+          <select name="solicitante"><option value="">Seleccionar…</option>${SOLICITANTES.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label>
         <label class="campo">Área técnica · 技术区域
           <select name="area" required>${opt(listaAreas(), a => `<option value="${esc(a.id)}" ${a.id === LS.get('area', '') ? 'selected' : ''}>${esc(a.nombre)}</option>`, 'Seleccionar…')}</select></label>
         <div class="dos">
@@ -325,7 +328,9 @@
         <label class="campo">Contratista · 承包商
           <select name="contratista" required>${opt(M.contratistas, c => `<option value="${esc(c.id)}">${esc(c.nombre)} · ${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
         <label class="campo">Labor · 工作面 (solo activas)
-          <select name="labor" required></select></label>
+          <select name="labor"></select></label>
+        <label class="campo" id="campoLaborLibre" hidden>Lugar de aplicación (opcional)
+          <input name="labor_libre" maxlength="60" placeholder="Ej.: apoyo SAM, obra civil…"></label>
         <fieldset><legend>Mezcla · 配合比</legend>
           <div class="opciones">${listaMezclas().map((m, i) => `<label class="op"><input type="radio" name="mezcla" value="${esc(m.id)}" ${i === 0 ? 'checked' : ''}><span>${esc(m.n)}</span></label>`).join('')}</div>
         </fieldset>
@@ -370,6 +375,8 @@
       const c = f.contratista.value;
       const ls = L.laboresActivas.filter(l => !c || !l.contratista || l.contratista === c)
         .sort((a, b) => a.id.localeCompare(b.id));
+      const libre = ls.length === 0;   // contratista sin labores en el maestro: se escribe el lugar
+      $('#campoLaborLibre', f).hidden = !libre; f.labor.hidden = libre; f.labor.parentElement.hidden = libre;
       f.labor.innerHTML = `<option value="">Seleccionar… (${ls.length})</option>` +
         ls.map(l => `<option value="${esc(l.id)}">${esc(l.id)} · ${l.tipo === 'PANEL' ? 'Panel' : 'Desarrollo'}</option>`).join('');
     };
@@ -455,7 +462,7 @@
       const pr = persona();
       if (!pr) err.push('Elija quién registra (cargo y nombre).');
       else if (!pr.guardia) err.push(`${pr.nombre} no tiene guardia en el maestro.`);
-      if (!f.labor.value) err.push('Elija la labor.');
+      if (!f.labor.value && !f.solicitante.value && !f.labor_libre.value.trim()) err.push('Elija la labor o el solicitante.');
       const vol = Number(f.volumen_m3.value);
       if (!(vol >= 0.5 && vol <= 12)) err.push('El volumen debe estar entre 0,5 y 12 m³.');
       if (!E.equipo) err.push('Escanee o elija el equipo.');
@@ -467,7 +474,7 @@
       if (err.length) return;
       const fh = f.fecha_hora.value || fechaLocal();
       await Datos.poner('remisiones', {
-        numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value,
+        numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value || [f.solicitante.value, f.labor_libre.value.trim()].filter(Boolean).join(' · '), solicitante: f.solicitante.value || '',
         mezcla: f.mezcla.value, categoria: cat, volumen_m3: num(vol), equipo: E.equipo,
         conductor: f.conductor.value || null, despachador: pr.rol === 'DESPACHADOR' ? pr.id : null,
         registrado_por: pr.id, cargo: pr.rol, tipo_equipo: f.tipo_equipo.value || 'NA',
@@ -900,7 +907,7 @@
     const lib = await Datos.todas('liberaciones');
     const hR = rem.map(r => ({
       'Remisión': r.numero, 'Fecha hora': r.fecha_hora.replace('T', ' '), 'Turno': r.turno, 'Guardia': r.guardia,
-      'Área técnica': areaN(r.area), 'Contratista': r.contratista, 'Labor': r.labor, 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Categoría': r.categoria || '', 'Volumen m3': r.volumen_m3,
+      'Área técnica': areaN(r.area), 'Contratista': r.contratista, 'Labor': r.labor, 'Solicitante': r.solicitante || '', 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Categoría': r.categoria || '', 'Volumen m3': r.volumen_m3,
       'Equipo': r.equipo, 'Conductor': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
       'Observaciones': r.observaciones, 'Versión maestro': r.maestro_version,
     }));

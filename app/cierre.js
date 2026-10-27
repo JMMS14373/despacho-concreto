@@ -139,7 +139,7 @@
       const x = s.concDe.get(r.numero) || {};
       return {
         'Remisión': r.numero, 'Fecha': r.fecha_hora.slice(0, 10), 'Hora salida': hora(r.fecha_hora), 'Turno': r.turno, 'Guardia': r.guardia, 'Área técnica': s.areaN(r.area),
-        'Contratista': s.contrN(r.contratista), 'Labor pedida': r.labor, 'Mezcla': s.mezclaN(r.mezcla), 'Categoría': r.categoria || '', 'm³ despachados': r.volumen_m3,
+        'Contratista': s.contrN(r.contratista), 'Labor pedida': r.labor, 'Solicitante': r.solicitante || '', 'Mezcla': s.mezclaN(r.mezcla), 'Categoría': r.categoria || '', 'm³ despachados': r.volumen_m3,
         'Equipo (Mixer)': r.equipo, 'Tipo de equipo (operador)': r.tipo_equipo || 'NA', 'Operador de Mixer': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
         'Regreso a planta': x.regreso ? x.regreso.replace('T', ' ') : '', 'Ciclo Mixer (min)': x.ciclo ?? '',
         'Labor aplicada': x.labores ? x.labores.join(', ') : '', 'm³ aplicados': x.lineas && x.lineas.length ? x.m3Aplicados : '',
