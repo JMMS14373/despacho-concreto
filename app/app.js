@@ -3,7 +3,7 @@
   'use strict';
 
   // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
-  const APP_VERSION = '1.5.1', APP_FECHA = '2026-10-25';
+  const APP_VERSION = '1.5.2', APP_FECHA = '2026-10-25';
 
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -871,15 +871,18 @@
             ${fila('Labores', d.labores)}${fila('Equipos', d.equipos)}${fila('Personas', d.personas)}</div>
           ${d.cambiosEstado.length ? `<div class="aviso warn"><b>Cambios de estado de equipos</b>${d.cambiosEstado.map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
           ${m.avisos.length ? `<div class="aviso warn"><b>${m.avisos.length} avisos</b>${m.avisos.slice(0, 6).map(x => `<span>${esc(x)}</span>`).join('')}</div>` : ''}
-          ${!d.esMasNueva ? `<div class="aviso err"><b>Este archivo no es más nuevo que el del celular.</b><span>Pida al administrador que suba el número de versión.</span></div>` : ''}
+          ${d.versionActual != null && d.versionNueva === d.versionActual ? `<div class="aviso warn"><b>Misma versión (${esc(d.versionNueva)}).</b><span>Se reemplazará el maestro del celular. Si cambió datos, suba el número de versión en tblMeta.</span></div>` : ''}
+          ${d.versionActual != null && d.versionNueva < d.versionActual ? `<div class="aviso err"><b>Este archivo (v${esc(d.versionNueva)}) es más antiguo que el del celular (v${esc(d.versionActual)}).</b>
+            <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input type="checkbox" id="forzar"> Cargarlo de todos modos</label></div>` : ''}
           <div style="display:flex;gap:8px">
             <button type="button" class="btn btn-sec" id="descartar" style="flex:1">Cancelar</button>
-            <button type="button" class="btn btn-osc" id="guardar" style="flex:2" ${d.esMasNueva ? '' : 'disabled'}>Guardar en el celular</button></div>
+            <button type="button" class="btn btn-osc" id="guardar" style="flex:2" ${d.esMasNueva || d.versionNueva === d.versionActual ? '' : 'disabled'}>Guardar en el celular</button></div>
         </section>`;
         $('#descartar', caja).addEventListener('click', () => { E.previa = null; caja.innerHTML = ''; });
+        const fz = $('#forzar', caja); if (fz) fz.addEventListener('change', () => { $('#guardar', caja).disabled = !fz.checked; });
         $('#guardar', caja).addEventListener('click', async () => {
           try {
-            M = await Maestro.guardar(E.previa); ajustarTurnos();
+            M = await Maestro.guardar(E.previa, !!($('#forzar', caja) || {}).checked); ajustarTurnos();
             E.previa = null;
             toast(`Maestro v${M.version} guardado en el celular`);
             ir('maestros');

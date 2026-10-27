@@ -296,6 +296,7 @@
     const faltan = OBLIGATORIAS.filter(n => !t[n]);
     if (faltan.length) return { errores: [`Faltan tablas: ${faltan.join(', ')}`], avisos: [] };
     const m = transformar(t);
+    (t.__avisos || []).forEach(a => m.avisos.push(a));
     m.archivo = file.name;
     return m;
   }
@@ -318,10 +319,10 @@
   }
   const cargarGuardado = () => op('readonly', s => s.get('actual'));
 
-  async function guardar(m) {
+  async function guardar(m, forzar) {
     if (m.errores && m.errores.length) throw new Error('El maestro tiene errores; no se guarda.');
     const actual = await cargarGuardado();
-    if (actual && m.version < actual.version)
+    if (actual && m.version < actual.version && !forzar)
       throw new Error(`Este archivo es la versión ${m.version} y el celular ya tiene la ${actual.version}.`);
     const registro = { ...m, cargadoEn: new Date().toISOString() };
     await op('readwrite', s => { if (actual) s.put(actual, 'anterior'); return s.put(registro, 'actual'); });
