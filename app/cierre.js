@@ -45,6 +45,8 @@
   function construir(d) {
     const vent = ventana(d.dia, d.turno);
     const contrN = (id) => ((d.maestro.contratistas || []).find(c => c.id === id) || {}).nombre || id;
+    const persN = (id) => !id ? '' : (((d.maestro.personas || []).find(p => p.id === id) || {}).nombre || id);
+    const CARGO_N = { DESPACHADOR: 'Despachador', CONDUCTOR: 'Operador de Mixer', OPERADOR_ROBOJET: 'Operador de Robojet' };
     const rems = d.remisiones.filter(r => dentro(r.fecha_hora, vent)).sort((a, b) => a.fecha_hora.localeCompare(b.fecha_hora));
     const validas = rems.filter(r => r.estado !== 'CANCELADO');
     const canceladas = rems.filter(r => r.estado === 'CANCELADO');
@@ -56,7 +58,7 @@
     const lineasPor = new Map();
     apps.forEach(a => a.lineas.forEach(l => {
       const x = lineasPor.get(l.remision) || [];
-      x.push({ m3: Number(l.m3), labor: a.labor, equipo: a.equipo, operador: a.operador, fin: a.fin, firma: !!a.firma_mixer });
+      x.push({ m3: Number(l.m3), labor: a.labor, equipo: a.equipo, operador: a.operador, fin: a.fin, firma: !!a.firma_mixer, opMixer: a.operador_mixer || '', mixerQR: l.mixer || '' });
       lineasPor.set(l.remision, x);
     }));
     const conc = validas.map(r => {
@@ -74,7 +76,13 @@
         const dl = labores.some(x => x !== r.labor), dm = Math.abs(m3Ap - Number(r.volumen_m3)) > 0.05;
         if (dl) detalle.push(`aplicada en ${labores.join(', ')}; pedida para ${r.labor}`);
         if (dm) detalle.push(`aplicados ${m3Ap} m³; despachados ${r.volumen_m3} m³`);
-        estado = !dl && !dm ? 'CONCILIADA' : dl && dm ? 'LUGAR Y m³ DISTINTOS' : dl ? 'LUGAR DISTINTO' : 'm³ DISTINTOS';
+        // roles: el Mixer del QR y el operador que firmó deben ser los de la remisión
+        const mixQR = [...new Set(lin.map(x => x.mixerQR).filter(Boolean))].filter(m => m !== r.equipo);
+        const firmantes = [...new Set(lin.map(x => x.opMixer).filter(Boolean))];
+        const dMix = mixQR.length > 0, dOp = !!r.conductor && firmantes.length > 0 && firmantes.some(o => o !== r.conductor);
+        if (dMix) detalle.push(`el QR trae el Mixer ${mixQR.join(', ')}; la remisión registra ${r.equipo}`);
+        if (dOp) detalle.push(`firmó ${firmantes.map(persN).join(', ')}; la remisión registra al operador ${persN(r.conductor)}`);
+        estado = !dl && !dm ? (dMix || dOp ? 'CONCILIADA CON OBSERVACIÓN' : 'CONCILIADA') : dl && dm ? 'LUGAR Y m³ DISTINTOS' : dl ? 'LUGAR DISTINTO' : 'm³ DISTINTOS';
       }
       return { r, lib, lineas: lin, m3Aplicados: m3Ap, labores, robojets: [...new Set(lin.map(x => x.equipo).filter(Boolean))],
         operadores: [...new Set(lin.map(x => x.operador).filter(Boolean))], estado, detalle: detalle.join('; '),
@@ -88,7 +96,10 @@
     const noOperativos = [...d.estadosAhora.entries()].filter(([, s]) => s.estado !== 'OPERATIVO')
       .map(([equipo, s]) => ({ equipo, estado: s.estado, desde: s.desde, motivo: s.motivo }));
     return {
-      dia: d.dia, turno: d.turno, turnoNombre: TURNOS[d.turno], ventana: vent, guardia: d.guardia, mezclaN: d.mezclaN, areaN: d.areaN || ((x) => x || ''), contrN,
+      dia: d.dia, turno: d.turno, turnoNombre: TURNOS[d.turno], ventana: vent, guardia: d.guardia, mezclaN: d.mezclaN, areaN: d.areaN || ((x) => x || ''), contrN, persN,
+      cargoN: (k) => CARGO_N[k] || k || '',
+      despDe: (r) => r.despachador || (libDe.get(r.numero) || {}).despachador || '',
+      nAplicaciones: appsVentana.length,
       generado: iso(new Date()) + ' ' + pad(new Date().getHours()) + ':' + pad(new Date().getMinutes()),
       version: d.maestro.version, appVersion: d.appVersion || '—',
       versionesApp: (() => { const m = new Map(); validas.concat(canceladas).forEach(r => { const v = r.app_version || 'anterior'; m.set(v, (m.get(v) || 0) + 1); });
@@ -97,7 +108,7 @@
       kpi: {
         viajes: validas.length, m3: r2(validas.reduce((s, r) => s + Number(r.volumen_m3 || 0), 0)),
         recibidos: r2(conc.reduce((s, x) => s + x.m3Aplicados, 0)), liberadas: libs.length,
-        conciliadas: conc.filter(x => x.estado === 'CONCILIADA').length, conDiferencia: alertas.length, sinAplicacion: sinAplicacion.length,
+        conciliadas: conc.filter(x => x.estado === 'CONCILIADA' || x.estado === 'CONCILIADA CON OBSERVACIÓN').length, conDiferencia: alertas.length, sinAplicacion: sinAplicacion.length,
         sinLiberar: sinLiberar.length, m3SinLiberar: r2(sinLiberar.reduce((s, r) => s + Number(r.volumen_m3 || 0), 0)),
         canceladas: canceladas.length,
       },
@@ -119,10 +130,10 @@
       ['CIERRE DE DESPACHO'], [`${s.dia} · ${s.turnoNombre} (${s.ventana[0].replace('T', ' ')} a ${s.ventana[1].replace('T', ' ')})`],
       [`Guardia ${s.guardia} · Maestro v${s.version} · App v${s.appVersion} · Generado ${s.generado}`],
       [`Versiones de la app que registraron en el periodo: ${s.versionesApp || '—'}`], [],
-      ['Viajes', k.viajes], ['m³ despachados', k.m3], ['m³ aplicados (registro del Robojet)', k.recibidos], ['Ciclos de Mixer cerrados (liberadas)', k.liberadas],
+      ['Viajes', k.viajes], ['m³ despachados', k.m3], ['Aplicaciones del Robojet recibidas', s.nAplicaciones], ['Ciclo medio del Robojet (min)', cicloMedio(s)], ['m³ aplicados (registro del Robojet)', k.recibidos], ['Ciclos de Mixer cerrados (liberadas)', k.liberadas],
       ['Mixers en ruta (sin liberar)', k.sinLiberar], ['m³ en ruta', k.m3SinLiberar],
       ['Conciliadas', k.conciliadas], ['Con diferencia (lugar o m³)', k.conDiferencia], ['Sin aplicación registrada', k.sinAplicacion], ['Remisiones canceladas', k.canceladas], [],
-      ...tabla('Por contratista', s.porContratista, 'Contratista'),
+      ...tabla('Por usuario', s.porContratista, 'Usuario'),
       ...tabla('Por mezcla', s.porMezcla, 'Mezcla'),
       ...tabla('Por labor (10 principales)', s.porLabor, 'Labor'),
       ['Mixers en ruta (sin liberar)'], ['Remisión', 'Hora', 'Equipo', 'Labor', 'm³'],
@@ -138,21 +149,21 @@
     const det = s.remisiones.concat(s.canceladas).sort((a, b) => a.numero - b.numero).map(r => {
       const x = s.concDe.get(r.numero) || {};
       return {
-        'Remisión': r.numero, 'Fecha': r.fecha_hora.slice(0, 10), 'Hora salida': hora(r.fecha_hora), 'Turno': r.turno, 'Guardia': r.guardia, 'Área técnica': s.areaN(r.area),
-        'Contratista': s.contrN(r.contratista), 'Labor pedida': r.labor, 'Solicitante': r.solicitante || '', 'Mezcla': s.mezclaN(r.mezcla), 'Categoría': r.categoria || '', 'm³ despachados': r.volumen_m3,
-        'Equipo (Mixer)': r.equipo, 'Tipo de equipo (operador)': r.tipo_equipo || 'NA', 'Operador de Mixer': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
+        'Remisión': r.numero, 'Fecha': r.fecha_hora.slice(0, 10), 'Hora salida': hora(r.fecha_hora), 'Turno': r.turno, 'Guardia': r.guardia, 'Solicitante': s.areaN(r.area),
+        'Usuario': s.contrN(r.contratista), 'Labor pedida': r.labor, 'Mezcla': s.mezclaN(r.mezcla), 'Categoría': r.categoria || '', 'm³ despachados': r.volumen_m3,
+        'Equipo (Mixer)': r.equipo, 'Tipo de equipo (operador)': r.tipo_equipo || 'NA', 'Operador de Mixer': s.persN(r.conductor), 'Despachador': s.persN(s.despDe(r)), 'Registrado por': s.persN(r.registrado_por), 'Cargo': s.cargoN(r.cargo), 'Estado': r.estado,
         'Regreso a planta': x.regreso ? x.regreso.replace('T', ' ') : '', 'Ciclo Mixer (min)': x.ciclo ?? '',
         'Labor aplicada': x.labores ? x.labores.join(', ') : '', 'm³ aplicados': x.lineas && x.lineas.length ? x.m3Aplicados : '',
-        'Robojet': x.robojets ? x.robojets.join(', ') : '', 'Operador de Robojet': x.operadores ? x.operadores.join(', ') : '', 'Firma Mixer': x.lineas && x.lineas.length ? (x.firma ? 'Sí' : 'No') : '',
+        'Robojet': x.robojets ? x.robojets.join(', ') : '', 'Operador de Robojet': x.operadores ? x.operadores.map(s.persN).join(', ') : '', 'Firma Mixer': x.lineas && x.lineas.length ? (x.firma ? 'Sí' : 'No') : '',
         'Conciliación': r.estado === 'CANCELADO' ? 'CANCELADA' : (x.estado || ''), 'Detalle conciliación': x.detalle || '',
         'Versión app': r.app_version || 'anterior', 'Observaciones despacho': r.observaciones, 'Observaciones liberación': (x.lib || {}).observaciones,
       };
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(det.length ? det : [{ 'Remisión': '' }]), 'Remisiones');
 
-    const apl = s.appsVentana.flatMap(a => a.lineas.map(l => ({ 'Robojet': a.equipo, 'Operador de Robojet': a.operador, 'Guardia': a.guardia, 'Labor aplicada': a.labor,
-      'Remisión': l.remision, 'm³ aplicados': l.m3, 'Inicio': a.inicio.replace('T', ' '), 'Fin': a.fin.replace('T', ' '), 'Operador de Mixer (firma)': a.operador_mixer,
-      'Firma': a.firma_mixer ? 'Sí' : 'No', 'Observaciones': a.observaciones, 'Versión app': a.app_version })));
+    const apl = s.appsVentana.flatMap(a => a.lineas.map(l => ({ 'Robojet': a.equipo, 'Operador de Robojet': s.persN(a.operador), 'Guardia': a.guardia, 'Labor aplicada': a.labor,
+      'Remisión': l.remision, 'm³ aplicados': l.m3, 'Mezcla (QR)': l.mezcla ? s.mezclaN(l.mezcla) : '', 'Mixer (QR)': l.mixer || '', 'Inicio': a.inicio.replace('T', ' '), 'Fin': a.fin.replace('T', ' '), 'Ciclo Robojet (min)': a.minutos_ciclo ?? '', 'Operador de Mixer (firma)': s.persN(a.operador_mixer),
+      'Firma': a.firma_mixer ? 'Sí' : 'No', 'Fotos del lugar': (a.fotos || []).length, 'Observaciones': a.observaciones, 'Versión app': a.app_version })));
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(apl.length ? apl : [{ 'Robojet': '' }]), 'Aplicaciones Robojet');
 
     const ev = s.eventos.map(e => ({ 'Equipo': e.equipo, 'Desde': e.momento.replace('T', ' '), 'Estado': e.estado, 'Tipo': e.categoria, 'Motivo': e.motivo, 'Registrado por': e.registrado_por }));
@@ -170,14 +181,14 @@
 
   /* ---------- CSV: una fila por remisión, con BOM para que Excel respete los acentos ---------- */
   function csv(s) {
-    const cab = ['Remisión', 'Fecha', 'Hora', 'Turno', 'Guardia', 'Área técnica', 'Contratista', 'Labor despachada', 'Mezcla', 'Categoría', 'm3 despachados', 'Equipo (Mixer)', 'Tipo de equipo (operador)', 'Operador de Mixer',
-      'Despachador', 'Estado', 'Regreso a planta', 'Ciclo Mixer (min)', 'Labor aplicada', 'm3 aplicados', 'Robojet', 'Operador de Robojet', 'Conciliación', 'Detalle conciliación', 'Observaciones despacho', 'Observaciones liberación', 'Versión app'];
+    const cab = ['Remisión', 'Fecha', 'Hora', 'Turno', 'Guardia', 'Solicitante', 'Usuario', 'Labor despachada', 'Mezcla', 'Categoría', 'm3 despachados', 'Equipo (Mixer)', 'Tipo de equipo (operador)', 'Operador de Mixer',
+      'Despachador', 'Registrado por', 'Cargo', 'Estado', 'Regreso a planta', 'Ciclo Mixer (min)', 'Labor aplicada', 'm3 aplicados', 'Robojet', 'Operador de Robojet', 'Firma Mixer', 'Conciliación', 'Detalle conciliación', 'Observaciones despacho', 'Observaciones liberación', 'Versión app'];
     const celda = (v) => { const t = v == null ? '' : String(v); return /[",;\n\r]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t; };
     const filas = s.remisiones.concat(s.canceladas).sort((a, b) => a.numero - b.numero).map(r => {
       const x = s.concDe.get(r.numero) || {};
       return [r.numero, r.fecha_hora.slice(0, 10), hora(r.fecha_hora), r.turno, r.guardia, s.areaN(r.area), s.contrN(r.contratista), r.labor, s.mezclaN(r.mezcla), r.categoria || '', r.volumen_m3,
-        r.equipo, r.tipo_equipo || 'NA', r.conductor, r.despachador, r.estado, x.regreso ? x.regreso.replace('T', ' ') : '', x.ciclo ?? '',
-        x.labores ? x.labores.join(' + ') : '', x.lineas && x.lineas.length ? x.m3Aplicados : '', x.robojets ? x.robojets.join(' + ') : '', x.operadores ? x.operadores.join(' + ') : '',
+        r.equipo, r.tipo_equipo || 'NA', s.persN(r.conductor), s.persN(s.despDe(r)), s.persN(r.registrado_por), s.cargoN(r.cargo), r.estado, x.regreso ? x.regreso.replace('T', ' ') : '', x.ciclo ?? '',
+        x.labores ? x.labores.join(' + ') : '', x.lineas && x.lineas.length ? x.m3Aplicados : '', x.robojets ? x.robojets.join(' + ') : '', x.operadores ? x.operadores.map(s.persN).join(' + ') : '', x.lineas && x.lineas.length ? (x.firma ? 'Sí' : 'No') : '',
         r.estado === 'CANCELADO' ? 'CANCELADA' : (x.estado || ''), x.detalle || '', r.observaciones, (x.lib || {}).observaciones, r.app_version || 'anterior'].map(celda).join(',');
     });
     const blob = new Blob(['﻿' + [cab.join(','), ...filas].join('\r\n')], { type: 'text/csv;charset=utf-8' });
@@ -187,13 +198,15 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   }
 
+  const cicloMedio = (s) => { const v = s.appsVentana.map(a => a.minutos_ciclo).filter(x => x != null); return v.length ? Math.round(v.reduce((t, x) => t + x, 0) / v.length) : ''; };
+
   /* ---------- PDF: página imprimible; el equipo la guarda como PDF ---------- */
   function pdfHtml(s) {
     const k = s.kpi;
     const tabla = (titulo, filas, col1) => filas.length ? `<h3>${esc(titulo)}</h3><table><tr><th>${esc(col1)}</th><th class="n">Viajes</th><th class="n">m³</th></tr>${filas.map(f => `<tr><td>${esc(f.nombre)}</td><td class="n">${f.viajes}</td><td class="n">${f.m3}</td></tr>`).join('')}</table>` : '';
     const lista = (titulo, cab, filas) => filas.length ? `<h3>${esc(titulo)}</h3><table><tr>${cab.map(c => `<th>${esc(c)}</th>`).join('')}</tr>${filas.map(f => `<tr>${f.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('')}</table>` : '';
     return `<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${esc(nombreArchivo(s, 'pdf').replace('.pdf', ''))}</title><style>
-      @page { size: A4; margin: 14mm; }
+      @page { size: A4 landscape; margin: 12mm; }
       body { font: 11px/1.35 "Segoe UI", Arial, sans-serif; color: #1B1F24; margin: 0; }
       h1 { font-size: 18px; margin: 0 0 2px; } .sub { color: #55606B; margin-bottom: 10px; }
       h3 { font-size: 12px; margin: 12px 0 4px; border-bottom: 1px solid #C8CCD0; padding-bottom: 2px; }
@@ -202,6 +215,7 @@
       .kpi.alerta { background: #FFF4D6; border-color: #F2A900; }
       table { width: 100%; border-collapse: collapse; } th, td { text-align: left; padding: 2px 6px; border-bottom: 1px solid #E4E6E8; }
       th { background: #F4F3EF; font-weight: 600; } .n { text-align: right; } .vacio { color: #55606B; }
+      .fotos { display: flex; flex-wrap: wrap; gap: 10px; } figure { margin: 0; break-inside: avoid; } figure img { border: 1px solid #C8CCD0; margin-right: 4px; } figcaption { font-size: 10px; color: #55606B; }
       .dos { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; } footer { margin-top: 14px; color: #55606B; font-size: 10px; }
     </style></head><body>
       <h1>Cierre de despacho · ${esc(s.dia)} · ${esc(s.turnoNombre)}</h1>
@@ -212,8 +226,15 @@
         <div class="kpi"><b>${k.recibidos}</b><span>m³ aplicados (${k.conciliadas} conciliadas)</span></div>
         <div class="kpi ${k.conDiferencia || k.sinAplicacion ? 'alerta' : ''}"><b>${k.conDiferencia}</b><span>Con diferencia · ${k.sinAplicacion} sin aplicación · ${k.sinLiberar} Mixers en ruta</span></div>
       </div>
-      <div class="dos"><div>${tabla('Por contratista', s.porContratista, 'Contratista')}${tabla('Por mezcla', s.porMezcla, 'Mezcla')}</div>
+      <div class="dos"><div>${tabla('Por usuario', s.porContratista, 'Usuario')}${tabla('Por mezcla', s.porMezcla, 'Mezcla')}</div>
         <div>${tabla('Por labor (10 principales)', s.porLabor, 'Labor')}</div></div>
+      ${lista('Detalle por remisión y roles', ['Rm', 'Hora', 'Usuario', 'Mezcla', 'Mixer', 'Operador de Mixer', 'Despachador', 'Robojet', 'Operador de Robojet', 'Labor pedida', 'Labor aplicada', 'm³ desp.', 'm³ aplic.', 'Conciliación'],
+        s.remisiones.map(r => { const x = s.concDe.get(r.numero) || {}; return [r.numero, hora(r.fecha_hora), s.contrN(r.contratista), s.mezclaN(r.mezcla) + (r.categoria && r.categoria !== 'NA' ? ' · ' + r.categoria : ''), r.equipo,
+          s.persN(r.conductor), s.persN(s.despDe(r)), (x.robojets || []).join(', '), (x.operadores || []).map(s.persN).join(', '), r.labor, (x.labores || []).join(', '), r.volumen_m3,
+          x.lineas && x.lineas.length ? x.m3Aplicados : '', x.estado || '']; }))}
+      ${k.viajes && !s.nAplicaciones ? '<p class="vacio"><b>No hay aplicaciones del Robojet recibidas en este equipo.</b> Se cargan con «Recibir» en Despachos (archivo que entrega el operador de Robojet).</p>' : ''}
+      ${lista('Aplicaciones del Robojet', ['Hora', 'Robojet', 'Operador', 'Labor aplicada', 'Remisiones', 'm³', 'Ciclo (min)', 'Firma Mixer'], s.appsVentana.map(a => [hora(a.fin), a.equipo, s.persN(a.operador), a.labor, a.lineas.map(l => l.remision).join(', '), r2(a.lineas.reduce((t, l) => t + Number(l.m3), 0)), a.minutos_ciclo ?? '', a.firma_mixer ? 'Sí' : 'No']))}
+      ${s.appsVentana.some(a => (a.fotos || []).length) ? `<h3>Fotos del lugar lanzado</h3><div class="fotos">${s.appsVentana.filter(a => (a.fotos || []).length).map(a => `<figure><div>${a.fotos.map(src => `<img src="${src}" width="200" height="200" alt="">`).join('')}</div><figcaption>${esc(hora(a.fin))} · ${esc(a.equipo)} · ${esc(a.labor)} · Rm ${esc(a.lineas.map(l => l.remision).join(', '))}</figcaption></figure>`).join('')}</div>` : ''}
       ${lista('Conciliación: diferencias entre lo pedido y lo aplicado', ['Rm', 'Detalle'], s.alertas.map(a => [a.remision, a.texto]))}
       ${lista('Sin aplicación registrada', ['Rm', 'Hora', 'Mixer', 'Labor pedida', 'm³'], s.sinAplicacion.map(x => [x.r.numero, hora(x.r.fecha_hora), x.r.equipo, x.r.labor, x.r.volumen_m3]))}
       ${lista('Mixers en ruta (sin liberar)', ['Rm', 'Hora', 'Equipo', 'Labor', 'm³'], s.sinLiberar.map(r => [r.numero, hora(r.fecha_hora), r.equipo, r.labor, r.volumen_m3]))}

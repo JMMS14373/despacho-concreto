@@ -22,14 +22,18 @@
   // Primer encabezado de cada tabla → nombre de la tabla (igual al Excel)
   const TABLAS = {
     'Version': 'tblMeta',
-    'Contractor': 'tblContractor',
+    'User': 'tblUser',
+    'Contractor': 'tblUser',           // maestros anteriores (tblContractor)
     'Shift': 'tblShift',
     'Guard': 'tblGuard',
-    'Status': 'tblMachineStatus',
+    'Machine Status': 'tblMachineStatus',
+    'Status': 'tblMachineStatus',      // maestros anteriores
     'Type': 'tblMachineType',
-    'Range': 'tblRange',
+    'Profile': 'tblProfile',
+    'Range': 'tblProfile',             // maestros anteriores (tblRange)
     'Dispatcher name': 'tblDispatcher',
-    'Gerencia': 'tblGerencia',
+    'Requester': 'tblRequester',
+    'Gerencia': 'tblRequester',        // maestros anteriores (tblGerencia)
     'Mezcla': 'tblMezcla',
     'Categoria': 'tblCategoria',
     'Categoria M': 'tblCategoriaM',
@@ -37,13 +41,13 @@
     'Machine name': 'tblMachine',
     'Month': 'tblLabor',
   };
-  const OBLIGATORIAS = ['tblMeta', 'tblContractor', 'tblMachine', 'tblOperator', 'tblLabor'];
+  const OBLIGATORIAS = ['tblMeta', 'tblUser', 'tblMachine', 'tblOperator', 'tblLabor'];
 
   const ESTADOS = { 'OPERATIVO': 'OPERATIVO', 'INOPERATIVO': 'INOPERATIVO', 'EN MANTENIMIENTO': 'MANTENIMIENTO',
                     'MANTENIMIENTO': 'MANTENIMIENTO', 'MANTENIMIENTO PREVENTIVO': 'MANTENIMIENTO',
                     'MANTENIMIENTO CORRECTIVO': 'MANTENIMIENTO', 'STANDBY': 'STANDBY', 'BAJA': 'BAJA' };
   const TIPOS = { 'MIXER': 'MIXER', 'ROBOJET': 'ROBOJET', 'BOMBA': 'BOMBA', 'OTRO': 'OTRO' };
-  // Cargo del maestro (tblRange) → código interno. CONDUCTOR = Operador de Mixer.
+  // Perfil del maestro (tblProfile) → código interno. CONDUCTOR = Operador de Mixer.
   const ROLES = { 'OPERADOR MIXER': 'CONDUCTOR', 'CONDUCTOR MIXER': 'CONDUCTOR', 'OPERADOR ROBOJET': 'OPERADOR_ROBOJET',
                   'DESPACHADOR': 'DESPACHADOR' };
   const CARGOS = { DESPACHADOR: 'Despachador', CONDUCTOR: 'Operador de Mixer', OPERADOR_ROBOJET: 'Operador de Robojet' };
@@ -103,8 +107,8 @@
     const version = Number(meta['Version']);
     if (!version) errores.push('tblMeta: falta el número de versión');
 
-    const contratistas = (t.tblContractor || []).filter(f => !vacio(f['Code']))
-      .map(f => ({ id: String(f['Code']).trim(), nombre: es(f['Contractor']) }));
+    const contratistas = (t.tblUser || []).filter(f => !vacio(f['Code']))
+      .map(f => ({ id: String(f['Code']).trim(), nombre: es(f['User'] ?? f['Contractor']) }));
     const codContr = Object.fromEntries(contratistas.map(c => [c.nombre, c.id]));
     const sinDato = (n) => vacio(n) || /^(ND|N\/?D|N\.?A\.?|NA|SIN DATO|-+)$/i.test(String(n).trim());
     const contr = (n) => sinDato(n) ? null : (codContr[es(n)] || undefined);
@@ -118,8 +122,8 @@
       const estado = ESTADOS[es(f['Status']) || 'OPERATIVO'];
       if (!estado) return errores.push(`Equipo ${id}: estado «${f['Status']}» no válido`);
       const c = contr(f['Contractor']);
-      if (c === undefined) return errores.push(`Equipo ${id}: contratista «${f['Contractor']}» no existe`);
-      if (c === null) avisos.push(`Equipo ${id}: contratista sin definir${vacio(f['Contractor']) ? '' : ' («' + String(f['Contractor']).trim() + '»)'}; se usa sin contratista hasta que se asigne`);
+      if (c === undefined) return errores.push(`Equipo ${id}: usuario «${f['Contractor']}» no existe`);
+      if (c === null) avisos.push(`Equipo ${id}: usuario sin definir${vacio(f['Contractor']) ? '' : ' («' + String(f['Contractor']).trim() + '»)'}; se usa sin contratista hasta que se asigne`);
       equipos.push({ id, nombre: f['Machine name'], tipo, estado, contratista: c,
                      capacidad: f['Capacity [m³]'], observacion: f['Observation'], activo: activo(f['Active']) });
     });
@@ -175,9 +179,9 @@
     const turnos = (t.tblShift || []).map(f => ({ id: (es(f['Shift']) || '').replace(/ /g, '_'),
       nombre: f['Shift'], inicio: hhmm(f['Start']), fin: hhmm(f['End']) }));
 
-    // Área técnica (tblGerencia), mezclas (tblMezcla) y categorías de vaceado (tblCategoria)
-    const areas = (t.tblGerencia || []).filter(f => !vacio(f['Code']) && !vacio(f['Gerencia']))
-      .map(f => ({ id: String(f['Code']).trim(), nombre: String(f['Gerencia']).trim() }));
+    // Solicitante / área (tblRequester), mezclas (tblMezcla) y categorías de vaceado (tblCategoria)
+    const areas = (t.tblRequester || []).filter(f => !vacio(f['Code']) && !vacio(f['Requester'] ?? f['Gerencia']))
+      .map(f => ({ id: String(f['Code']).trim(), nombre: String(f['Requester'] ?? f['Gerencia']).trim() }));
     const esVaceado = (n) => /vac(e|i)ado/i.test(norm(n));
     const mezclas = (t.tblMezcla || []).filter(f => !vacio(f['Mezcla']))
       .map(f => ({ id: String(f['Mezcla']).trim(), nombre: String(f['Mezcla']).trim(), unidad: vacio(f['Unidades']) ? null : String(f['Unidades']).trim(),
@@ -186,7 +190,7 @@
     const filasCat = t.tblCategoriaM || t.tblCategoria || [];
     const categorias = filasCat.map(f => f['Categoria M'] ?? f['Categoria']).filter(v => !vacio(v))
       .map(v => String(v).trim()).filter(c => c.toUpperCase() !== 'NA');
-    if (mezclas.some(m => m.vaceado) && !categorias.length) errores.push('Hay mezclas de vaceado pero falta la tabla tblCategoriaM (o está vacía).');
+    if (mezclas.length && !categorias.length) errores.push('Falta la tabla tblCategoriaM (o está vacía): la categoría es obligatoria en cada remisión.');
 
     return {
       version, fecha: meta['Date'] ?? null, responsable: meta['Updated by'] ?? null, notas: meta['Notes'] ?? null,

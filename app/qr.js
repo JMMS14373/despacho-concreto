@@ -77,5 +77,5 @@
     }
   }
 
-  global.QR = { PREFIJO, interpretar, validarEquipo, escanearEquipo };
+  global.QR = { PREFIJO, interpretar, validarEquipo, escanearEquipo, leer: leerQR };
 })(typeof window !== 'undefined' ? window : globalThis);

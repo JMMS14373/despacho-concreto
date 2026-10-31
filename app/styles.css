@@ -159,3 +159,10 @@ dialog .btn { width: 100%; }
 @keyframes sacude { 25% { transform: translateX(-8px); } 75% { transform: translateX(8px); } }
 [hidden] { display: none !important; }
 input[readonly] { background: #EEF1F4; color: var(--texto, #1B242C); font-weight: 600; }
+
+.fotos { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.foto { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+.foto img { width: 100%; max-width: 200px; aspect-ratio: 1; object-fit: cover; border-radius: 10px; border: 1px solid #8A939B; align-self: center; }
+.foto-del { border: 0; background: none; color: var(--gris); font-size: 12px; text-decoration: underline; min-height: 28px; }
+
+.foto-btns { display: flex; flex-direction: column; gap: 6px; }

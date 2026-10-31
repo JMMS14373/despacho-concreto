@@ -51,10 +51,18 @@
   <button type="button" class="btn btn-sec" id="qrCancelar">Cancelar</button>
 </dialog>
 
+<dialog id="dlgRM" aria-label="QR de la remisión">
+  <div class="qr-caja" style="background:#fff;padding:12px;border-radius:12px"><div id="rmQrImg" style="width:min(70vw,300px);margin:auto"></div></div>
+  <p class="qr-ayuda" id="rmQrInfo"></p>
+  <p class="qr-ayuda">El operador de Robojet lo escanea desde «Aplicar» · 喷浆台车操作员扫描</p>
+  <button type="button" class="btn btn-sec" id="rmQrCerrar">Cerrar</button>
+</dialog>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script src="app/vendor/xlsx.full.min.js"></script>
 <script src="app/vendor/jsQR.js"></script>
+<script src="app/vendor/qrcode.js"></script>
 <script src="app/maestro.js"></script>
 <script src="app/qr.js"></script>
 <script src="app/pin.js"></script>

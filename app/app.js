@@ -3,7 +3,7 @@
   'use strict';
 
   // Versión de la app: súbala cada vez que publique cambios. Aparece en pantalla, en cada registro y en el cierre (PDF, Excel y CSV).
-  const APP_VERSION = '1.5.4', APP_FECHA = '2026-10-25';
+  const APP_VERSION = '1.9.0', APP_FECHA = '2026-10-30';
 
   /* ---------------- utilidades ---------------- */
   const $ = (s, r = document) => r.querySelector(s);
@@ -50,12 +50,6 @@
   }
 
   /* ---------------- catálogos técnicos (genéricos) ---------------- */
-  const MEZCLAS = [
-    { id: 'MZ-LAN-4000', n: 'Lanzado 4000' }, { id: 'MZ-EST-3000', n: '3000 PSI' },
-    { id: 'MZ-EST-4000', n: '4000 PSI' }, { id: 'MZ-EST-5000', n: '5000 PSI' }, { id: 'MZ-MR-4', n: 'MR 4 MPa' },
-  ];
-  const CATEG_BASE = ['Muro', 'Losa comedor', 'Losa refugio', 'Losa SAM', 'Cuneta', 'NA'];
-  const SOLICITANTES = ['SAM temas especiales', 'Obras civiles'];
   const METODOS = [['ROBOJET', 'Robojet'], ['GRAVEDAD', 'Gravedad'], ['AUTOBOMBA', 'Autobomba'],
     ['BOMBA_ESTACIONARIA', 'B. estacionaria'], ['GRUA_BACHA', 'Grúa-bacha'], ['TRASIEGO', 'Trasiego'], ['OTROS', 'Otros']];
   const EST_REM = { DESPACHADO: ['POR LIBERAR', 'e-lib'], LIBERADO: ['LIBERADO', 'e-ok'], CANCELADO: ['CANCELADO', 'e-can'] };
@@ -67,13 +61,13 @@
     const min = Math.max(0, Math.round((Date.now() - new Date(desde).getTime()) / 60000));
     return min < 60 ? `${min} min` : min < 1440 ? `${Math.floor(min / 60)} h ${min % 60} min` : `${Math.floor(min / 1440)} d ${Math.floor((min % 1440) / 60)} h`;
   };
-  const AREAS = [{ id: 'OPM', nombre: 'Operación Mina' }, { id: 'ST', nombre: 'Servicios Técnicos' }, { id: 'OC', nombre: 'Obras Civiles' }];
+  const AREAS = [{ id: 'M', nombre: 'Mina' }, { id: 'PDC', nombre: 'Proyectos de Construcción' }];
   const CARGOS = [['DESPACHADOR', 'Despachador'], ['CONDUCTOR', 'Operador de Mixer'], ['OPERADOR_ROBOJET', 'Operador de Robojet']];
   // Mezclas: las del maestro (tblMezcla); las de ejemplo solo si el maestro no las trae. El id guardado es el nombre de la mezcla.
-  const listaMezclas = () => (M && M.mezclas && M.mezclas.length) ? M.mezclas.map(m => ({ id: m.id, n: m.nombre, vaceado: m.vaceado })) : MEZCLAS.map(m => ({ ...m, vaceado: /-EST-/.test(m.id) }));
+  const listaMezclas = () => (M && M.mezclas ? M.mezclas : []).map(m => ({ id: m.id, n: m.nombre, vaceado: m.vaceado }));   // solo las de tblMezcla
   const listaAreas = () => (M && M.areas && M.areas.length) ? M.areas : AREAS;
   const areaN = (id) => (listaAreas().find(a => a.id === id) || AREAS.find(a => a.id === id) || {}).nombre || id || '';
-  const mezclaN = (id) => (listaMezclas().find(m => m.id === id) || MEZCLAS.find(m => m.id === id) || {}).n || id;
+  const mezclaN = (id) => (listaMezclas().find(m => m.id === id) || {}).n || id;
   const mezclaTxt = (r) => mezclaN(r.mezcla) + (r.categoria && r.categoria !== 'NA' ? ' · ' + r.categoria : '');
 
   /* ---------------- datos del dispositivo (IndexedDB) ---------------- */
@@ -241,6 +235,7 @@
     $('#cerrarTurno', main).addEventListener('click', () => { E.cierre = E.cierre ? null : cierreInicial(); panelCierre(main); });
     panelCierre(main);
     $$('[data-cancelar]', main).forEach(b => b.addEventListener('click', () => cancelar(Number(b.dataset.cancelar), main)));
+    $$('[data-qrrm]', main).forEach(b => b.addEventListener('click', async () => mostrarQRRemision(await Datos.una('remisiones', Number(b.dataset.qrrm)))));
   }
   /* ---------- cierre de turno: PDF, Excel o CSV ---------- */
   function cierreInicial() {
@@ -290,8 +285,9 @@
       <div class="item-meta"><span>${esc(r.fecha_hora.slice(5, 10))} ${esc(hora(r.fecha_hora))}</span><span>${esc(mezclaTxt(r))}</span>
         <span>${esc(num(r.volumen_m3))} m³</span><span>${esc(r.equipo)}</span></div>
       ${r.estado === 'DESPACHADO' ? `<div class="item-acc">
-        <button type="button" class="btn btn-osc btn-peq" data-ir="liberar" data-rm="${esc(r.numero)}">Liberar</button>
-        <button type="button" class="btn btn-sec btn-peq" data-cancelar="${esc(r.numero)}">Cancelar</button></div>` : ''}
+        <button type="button" class="btn btn-sec btn-peq" data-qrrm="${esc(r.numero)}">QR</button>
+${perfil() === 'DESPACHADOR' ? `<button type="button" class="btn btn-osc btn-peq" data-ir="liberar" data-rm="${esc(r.numero)}">Liberar</button>
+        <button type="button" class="btn btn-sec btn-peq" data-cancelar="${esc(r.numero)}">Cancelar</button>` : ''}</div>` : ''}
     </li>`;
   }
   async function cancelar(numero, main) {
@@ -316,8 +312,6 @@
     main.innerHTML = `
       <form id="fRem" novalidate>
         <label class="campo">Solicitante · 申请方
-          <select name="solicitante"><option value="">Seleccionar…</option>${SOLICITANTES.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('')}</select></label>
-        <label class="campo">Área técnica · 技术区域
           <select name="area" required>${opt(listaAreas(), a => `<option value="${esc(a.id)}" ${a.id === LS.get('area', '') ? 'selected' : ''}>${esc(a.nombre)}</option>`, 'Seleccionar…')}</select></label>
         <div class="dos">
           <label class="campo">N.º remisión
@@ -325,7 +319,7 @@
           <label class="campo">Fecha y hora
             <input name="fecha_hora" type="datetime-local" required value="${fechaLocal()}"></label>
         </div>
-        <label class="campo">Contratista · 承包商
+        <label class="campo">Usuario · 用户
           <select name="contratista" required>${opt(M.contratistas, c => `<option value="${esc(c.id)}">${esc(c.nombre)} · ${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
         <label class="campo">Labor · 工作面 (solo activas)
           <select name="labor"></select></label>
@@ -334,8 +328,8 @@
         <fieldset><legend>Mezcla · 配合比</legend>
           <div class="opciones">${listaMezclas().map((m, i) => `<label class="op"><input type="radio" name="mezcla" value="${esc(m.id)}" ${i === 0 ? 'checked' : ''}><span>${esc(m.n)}</span></label>`).join('')}</div>
         </fieldset>
-        <label class="campo" id="campoCat">Categoría · 类别 (solo vaceado)
-          <select name="categoria">${opt((L.categorias && L.categorias.length ? L.categorias : CATEG_BASE).map(c => ({ id: c })), c => `<option value="${esc(c.id)}">${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
+        <label class="campo" id="campoCat">Categoría · 类别
+          <select name="categoria">${opt((L.categorias || []).map(c => ({ id: c })), c => `<option value="${esc(c.id)}">${esc(c.id)}</option>`, 'Seleccionar…')}</select></label>
         <div class="campo">Volumen · 体积 (m³)
           <div class="stepper">
             <button type="button" data-paso="-0.5" aria-label="Restar 0,5 m³">−</button>
@@ -372,28 +366,16 @@
       </form>`;
     const f = $('#fRem', main);
     const llenarLabores = () => {
-      const c = f.contratista.value;
-      const ls = L.laboresActivas.filter(l => !c || !l.contratista || l.contratista === c)
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const libre = ls.length === 0;   // contratista sin labores en el maestro: se escribe el lugar
+      const ls = [...L.laboresActivas].sort((a, b) => a.id.localeCompare(b.id));   // todas las labores, de cualquier usuario (los equipos se prestan)
+      const libre = ls.length === 0;   // solo si el maestro no trae ninguna labor activa
       $('#campoLaborLibre', f).hidden = !libre; f.labor.hidden = libre; f.labor.parentElement.hidden = libre;
       f.labor.innerHTML = `<option value="">Seleccionar… (${ls.length})</option>` +
         ls.map(l => `<option value="${esc(l.id)}">${esc(l.id)} · ${l.tipo === 'PANEL' ? 'Panel' : 'Desarrollo'}</option>`).join('');
     };
     llenarLabores();
-    f.contratista.addEventListener('change', llenarLabores);
-    // Categoría: solo si la mezcla es de vaceado; en otro caso queda NA
     const mezclaSel = () => listaMezclas().find(m => m.id === (f.mezcla.value || ($('input[name=mezcla]:checked', f) || {}).value));
-    const ajustaCategoria = () => {
-      const v = !!(mezclaSel() || {}).vaceado, c = $('#campoCat', f);
-      f.categoria.disabled = !v;
-      if (!v) { f.categoria.innerHTML = '<option value="">NA (automático)</option>'; f.categoria.value = ''; }
-      else if (f.categoria.options.length < 2 || f.categoria.options[0].textContent.startsWith('NA')) {
-        f.categoria.innerHTML = '<option value="">Seleccionar…</option>' + (L.categorias && L.categorias.length ? L.categorias : CATEG_BASE).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
-      }
-    };
-    $$('input[name=mezcla]', f).forEach(r => r.addEventListener('change', ajustaCategoria));
-    ajustaCategoria();
+    // Categoría: lista desplegable con todo lo de tblCategoriaM; es obligatoria para cualquier mezcla (sin reglas especiales por tipo de mezcla)
+    f.categoria.innerHTML = '<option value="">Seleccionar…</option>' + (L.categorias || []).map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
     // Nombre → código → cargo(s), guardia y tipo de equipo (todo sale del maestro: Code, Range, Range2, Guard)
     const CARGO_TXT = Object.fromEntries(CARGOS);
     const TIPO_DE = { CONDUCTOR: 'MIXER', OPERADOR_ROBOJET: 'ROBOJET', DESPACHADOR: 'NA' };
@@ -455,14 +437,15 @@
       if (!Number.isInteger(numero) || numero < 1) err.push('Número de remisión inválido.');
       const previa = numero ? await Datos.una('remisiones', numero) : null;
       if (previa && previa.estado !== 'CANCELADO') err.push(`La remisión ${numero} ya existe.`);
-      if (!f.area.value) err.push('Elija el área técnica.');
-      if (!f.contratista.value) err.push('Elija la contratista.');
-      const cat = (mezclaSel() || {}).vaceado ? f.categoria.value : 'NA';
-      if (!cat) err.push('Elija la categoría del vaceado.');
+      if (!f.area.value) err.push('Elija el solicitante.');
+      if (!f.contratista.value) err.push('Elija el usuario.');
+      if (!mezclaSel()) err.push('Elija la mezcla (debe existir en tblMezcla del maestro).');
+      const cat = f.categoria.value;
+      if (!cat) err.push('Elija la categoría.');
       const pr = persona();
       if (!pr) err.push('Elija quién registra (cargo y nombre).');
       else if (!pr.guardia) err.push(`${pr.nombre} no tiene guardia en el maestro.`);
-      if (!f.labor.value && !f.solicitante.value && !f.labor_libre.value.trim()) err.push('Elija la labor o el solicitante.');
+      if (!f.labor.value && !f.labor_libre.value.trim()) err.push('Elija la labor.');
       const vol = Number(f.volumen_m3.value);
       if (!(vol >= 0.5 && vol <= 12)) err.push('El volumen debe estar entre 0,5 y 12 m³.');
       if (!E.equipo) err.push('Escanee o elija el equipo.');
@@ -474,7 +457,7 @@
       if (err.length) return;
       const fh = f.fecha_hora.value || fechaLocal();
       await Datos.poner('remisiones', {
-        numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value || [f.solicitante.value, f.labor_libre.value.trim()].filter(Boolean).join(' · '), solicitante: f.solicitante.value || '',
+        numero, fecha_hora: fh, area: f.area.value, contratista: f.contratista.value, labor: f.labor.value || f.labor_libre.value.trim(),
         mezcla: f.mezcla.value, categoria: cat, volumen_m3: num(vol), equipo: E.equipo,
         conductor: f.conductor.value || null, despachador: pr.rol === 'DESPACHADOR' ? pr.id : null,
         registrado_por: pr.id, cargo: pr.rol, tipo_equipo: f.tipo_equipo.value || 'NA',
@@ -483,19 +466,52 @@
       });
       LS.set('area', f.area.value);
       toast(`Remisión ${numero} despachada`);
-      ir('despachos');
+      await ir('despachos');
+      mostrarQRRemision(await Datos.una('remisiones', numero));
     });
   }
 
   /* ---------------- escáner QR (diálogo) ---------------- */
-  async function escanear(validar) {
+  async function escanear(validar, ayuda) {
     const dlg = $('#dlgQR'), ctrl = new AbortController();
+    $('.qr-ayuda', dlg).textContent = ayuda || 'Apunte al QR pegado en el equipo · 扫描设备二维码';
     const cerrar = () => ctrl.abort();
     $('#qrCancelar').onclick = cerrar;
     dlg.addEventListener('cancel', cerrar, { once: true });
     dlg.showModal();
     try { return await QR.escanearEquipo($('#qrVideo'), { signal: ctrl.signal, timeoutMs: 45000, validar }); }
     finally { if (dlg.open) dlg.close(); }
+  }
+
+  // Lee un QR cualquiera (sin validar equipo) y devuelve el texto
+  async function escanearTexto(ayuda) {
+    const dlg = $('#dlgQR'), ctrl = new AbortController();
+    $('.qr-ayuda', dlg).textContent = ayuda;
+    $('#qrCancelar').onclick = () => ctrl.abort();
+    dlg.addEventListener('cancel', () => ctrl.abort(), { once: true });
+    dlg.showModal();
+    try { const t = await QR.leer($('#qrVideo'), { signal: ctrl.signal, timeoutMs: 45000 }); if (navigator.vibrate) navigator.vibrate(80); return { ok: true, texto: t }; }
+    catch (e) { return { ok: false, error: e.message }; }
+    finally { if (dlg.open) dlg.close(); }
+  }
+
+  /* ---------------- QR de la remisión: el Mixer se lo muestra al operador de Robojet (se lee sin señal) ----------------
+     DC1|RM|<remisión>|<Mixer>|<mezcla>|<categoría>|<m³>|<operador de Mixer>  */
+  const qrRemisionTexto = (r) => ['DC1', 'RM', r.numero, r.equipo, r.mezcla, r.categoria || 'NA', r.volumen_m3, r.conductor || ''].join('|');
+  function leerQRRemision(texto) {
+    const p = String(texto || '').split('|');
+    if (p[0] !== 'DC1' || p[1] !== 'RM' || p.length < 8) return null;
+    const numero = Number(p[2]), m3 = Number(p[6]);
+    if (!Number.isInteger(numero) || numero < 1 || !(m3 > 0)) return null;
+    return { numero, equipo: p[3], mezcla: p[4], categoria: p[5], m3, conductor: p[7] || null };
+  }
+  function mostrarQRRemision(r) {
+    const dlg = $('#dlgRM');
+    const q = qrcode(0, 'M'); q.addData(qrRemisionTexto(r)); q.make();
+    $('#rmQrImg', dlg).innerHTML = q.createSvgTag({ cellSize: 6, margin: 3, scalable: true });
+    $('#rmQrInfo', dlg).innerHTML = `<b>Rm ${esc(r.numero)}</b><span>${esc(r.equipo)} · ${esc(mezclaTxt(r))} · ${esc(num(r.volumen_m3))} m³</span>`;
+    $('#rmQrCerrar', dlg).onclick = () => dlg.close();
+    if (!dlg.open) dlg.showModal();
   }
 
   /* ================= 3. LIBERAR ================= */
@@ -527,6 +543,8 @@
       <form id="fLib" novalidate>
         <label class="campo">Hora de regreso a planta · 返回时间
           <input name="regreso" type="datetime-local" required value="${fechaLocal()}"></label>
+        <label class="campo">Despachador que libera · 调度员
+          <select name="despachador" required><option value="">Seleccionar…</option>${Maestro.listas(M).porCargo('DESPACHADOR').map(p => `<option value="${esc(p.id)}" ${p.id === (r.despachador || LS.get('despachador', '')) ? 'selected' : ''}>${esc(p.nombre)} · ${esc(p.id)}</option>`).join('')}</select></label>
         <div class="aviso info"><span>La labor real y los m³ aplicados los registra el operador de Robojet. Se concilian en el cierre.</span></div>
         <label class="campo">Observaciones<textarea name="obs" maxlength="300"></textarea></label>
         <div id="errLib"></div>
@@ -539,13 +557,15 @@
       ev.preventDefault();
       const reg = f.regreso.value || fechaLocal(), err = [];
       if (reg < r.fecha_hora) err.push('La hora de regreso no puede ser anterior a la salida.');
+      if (!f.despachador.value) err.push('Elija el despachador que libera.');
       $('#errLib', f).innerHTML = err.length ? `<div class="aviso err" role="alert">${err.map(e => `<span>${esc(e)}</span>`).join('')}</div>` : '';
       if (err.length) return;
       const min = Math.round((new Date(reg) - new Date(r.fecha_hora)) / 60000);
       await Datos.poner('liberaciones', {
         remision_num: r.numero, fecha_hora: reg, minutos_ciclo: min, contratista: r.contratista, mezcla: r.mezcla,
-        observaciones: f.obs.value.trim() || null, app_version: APP_VERSION, maestro_version: M.version, registrado_por: 'Guardia ' + guardiaActual(),
+        despachador: f.despachador.value, observaciones: f.obs.value.trim() || null, app_version: APP_VERSION, maestro_version: M.version, registrado_por: 'Guardia ' + guardiaActual(),
       });
+      LS.set('despachador', f.despachador.value);
       r.estado = 'LIBERADO';
       await Datos.poner('remisiones', r);
       toast(`Rm ${r.numero}: ciclo del Mixer cerrado (${min} min)`);
@@ -554,6 +574,18 @@
   }
 
   /* ================= 3b. APLICACIÓN (operador de Robojet, sin señal) ================= */
+  // Foto → recorte cuadrado centrado → 200 × 200 px → JPEG pequeño (data URL)
+  async function foto200(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const im = await new Promise((ok, ko) => { const x = new Image(); x.onload = () => ok(x); x.onerror = ko; x.src = url; });
+      const w = im.naturalWidth, h = im.naturalHeight, l = Math.min(w, h);
+      const c = document.createElement('canvas'); c.width = c.height = 200;
+      c.getContext('2d').drawImage(im, (w - l) / 2, (h - l) / 2, l, l, 0, 0, 200, 200);
+      return c.toDataURL('image/jpeg', 0.7);
+    } finally { URL.revokeObjectURL(url); }
+  }
+
   async function vAplicar(main) {
     const L = Maestro.listas(M);
     const robojets = M.equipos.filter(e => e.activo && e.tipo === 'ROBOJET');
@@ -570,6 +602,10 @@
         <div class="kpi ${porEntregar ? 'alerta' : ''}"><span>Por entregar</span><b>${porEntregar}</b></div>
       </section>
       <form id="fApl" novalidate>
+        <button type="button" class="btn btn-osc btn-grande" id="qrRobojet">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3"/><rect x="7" y="7" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/></svg>
+          Escanear QR del Robojet</button>
+        <div id="fichaRobojet" class="equipo-sel" aria-live="polite"><b>—</b><small>Escanee el QR del Robojet o elíjalo de la lista</small></div>
         <label class="campo">Robojet · 喷浆台车
           <select name="equipo" required><option value="">Seleccionar…</option>${robojets.map(e => `<option value="${esc(e.id)}" ${e.id === LS.get('eq_robojet', '') ? 'selected' : ''}>${esc(e.id)}</option>`).join('')}</select></label>
         <div class="dos">
@@ -580,13 +616,23 @@
         <label class="campo">Labor donde se aplicó · 实际工作面
           <select name="labor" required><option value="">Seleccionar… (${L.laboresActivas.length})</option>${L.laboresActivas.sort((a, b) => a.id.localeCompare(b.id)).map(l => `<option value="${esc(l.id)}">${esc(l.id)}</option>`).join('')}</select></label>
         <fieldset><legend>Remisiones aplicadas · 使用的发货单</legend>
+          <button type="button" class="btn btn-osc" id="qrRemision">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V4h3M21 7V4h-3M3 17v3h3M21 17v3h-3"/><rect x="7" y="7" width="4" height="4"/><rect x="13" y="13" width="4" height="4"/></svg>
+            Escanear QR de la remisión (del Mixer)</button>
           <div id="lineas">${lineaHtml()}</div>
-          <button type="button" class="btn btn-sec btn-peq" id="masRm">+ Otra remisión</button>
+          <button type="button" class="btn btn-sec btn-peq" id="masRm">+ Otra remisión a mano</button>
         </fieldset>
         <label class="campo">Inicio de la aplicación<input name="inicio" type="datetime-local" required value="${fechaLocal()}"></label>
         <label class="campo">Operador de Mixer que entregó (firma)
           <select name="mixer" required><option value="">Seleccionar…</option>${mixers.map(p => `<option value="${esc(p.id)}">${esc(p.nombre)} · ${esc(p.id)}</option>`).join('')}</select></label>
         <div class="firmas"><div class="firma" data-firma="mixer"><span>Firma del operador de Mixer · 司机签名</span><canvas aria-label="Firma del operador de Mixer"></canvas><button type="button">Borrar</button></div></div>
+        <fieldset><legend>Fotos del lugar lanzado · 喷射位置照片 (máx. 2)</legend>
+          <div class="fotos">${[0, 1].map(i => `<div class="foto" data-foto="${i}"><div class="foto-btns"><button type="button" class="btn btn-osc foto-cam">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>Cámara ${i + 1}</button>
+            <button type="button" class="btn btn-sec foto-gal">Galería ${i + 1}</button></div>
+            <input type="file" accept="image/*" capture="environment" hidden data-src="cam"><input type="file" accept="image/*" hidden data-src="gal"><img alt="" hidden width="200" height="200"><button type="button" class="foto-del" hidden>Quitar</button></div>`).join('')}</div>
+          <small>Se guardan reducidas a 200 × 200 px para no pesar en el archivo de entrega.</small>
+        </fieldset>
         <label class="campo">Observaciones<textarea name="obs" maxlength="300"></textarea></label>
         <div id="errApl"></div>
         <div class="barra"><button type="submit" class="btn btn-pri btn-grande">Guardar · tarea realizada</button></div>
@@ -597,15 +643,62 @@
         <div class="item-meta"><span>${esc(hora(a.inicio))}–${esc(hora(a.fin))}</span><span>Rm ${esc(a.lineas.map(l => l.remision).join(', '))}</span><span>${esc(num(a.lineas.reduce((s, l) => s + l.m3, 0)))} m³</span></div></li>`).join('')}</ul>` : ''}`;
     const f = $('#fApl', main);
     const firma = padFirma($('[data-firma]', f));
+    const fotos = [null, null];
+    $$('[data-foto]', f).forEach(caja => {
+      const i = Number(caja.dataset.foto), img = $('img', caja), del = $('.foto-del', caja);
+      const pinta = () => { img.hidden = del.hidden = !fotos[i]; if (fotos[i]) img.src = fotos[i]; };
+      $('.foto-cam', caja).addEventListener('click', () => $('[data-src=cam]', caja).click());
+      $('.foto-gal', caja).addEventListener('click', () => $('[data-src=gal]', caja).click());
+      del.addEventListener('click', () => { fotos[i] = null; $$('input', caja).forEach(x => { x.value = ''; }); pinta(); });
+      $$('input', caja).forEach(inp => inp.addEventListener('change', async () => {
+        const file = inp.files && inp.files[0]; if (!file) return;
+        try { fotos[i] = await foto200(file); pinta(); } catch (e) { toast('No se pudo leer la foto.', true); }
+        inp.value = '';
+      }));
+    });
     const ponGuardia = () => { const p = ops.find(x => x.id === f.operador.value); f.guardia.value = p ? (p.guardia || 'Sin guardia en el maestro') : '—'; if (p && p.guardia) { LS.set('guardia', p.guardia); encabezado(); } };
     f.operador.addEventListener('change', () => { LS.set('op_robojet', f.operador.value); ponGuardia(); });
-    f.equipo.addEventListener('change', () => LS.set('eq_robojet', f.equipo.value));
+    const ficha = () => {
+      const e = M.equipos.find(x => x.id === f.equipo.value), c = $('#fichaRobojet', f);
+      c.className = 'equipo-sel' + (e ? ' ok' : '');
+      c.innerHTML = e ? `<b>${esc(e.id)}</b><small>Robojet · ${esc(contrN(e.contratista) || 'sin usuario asignado')} · ${esc(e.estado === 'OPERATIVO' ? 'Operativo ✓' : e.estado)}</small>`
+        : '<b>—</b><small>Escanee el QR del Robojet o elíjalo de la lista</small>';
+    };
+    f.equipo.addEventListener('change', () => { LS.set('eq_robojet', f.equipo.value); ficha(); });
+    ficha();
     ponGuardia();
     $('#masRm', f).addEventListener('click', () => { $('#lineas', f).insertAdjacentHTML('beforeend', lineaHtml()); });
+    // QR del Robojet → elige el equipo
+    $('#qrRobojet', f).addEventListener('click', async () => {
+      const v = await escanear(async (cod) => {
+        const e = M.equipos.find(x => x.id.toUpperCase() === cod.toUpperCase());
+        if (!e) return { ok: false, error: `El equipo ${cod} no está en el maestro v${M.version}.` };
+        if (e.tipo !== 'ROBOJET') return { ok: false, error: `${cod} no es un Robojet (es ${e.tipo}).` };
+        return { ok: true, equipo: e };
+      }, 'Apunte al QR pegado en el Robojet · 扫描喷浆台车二维码');
+      if (v.ok) { f.equipo.value = v.equipo.id; LS.set('eq_robojet', v.equipo.id); ficha(); toast(`Robojet ${v.equipo.id} listo`); }
+      else if (v.error !== 'Escaneo cancelado.') toast(v.error, true);
+    });
+    // QR de la remisión (lo muestra el operador de Mixer) → número, m³, mezcla y operador de Mixer
+    $('#qrRemision', f).addEventListener('click', async () => {
+      const s = await escanearTexto('Apunte al QR de la remisión que muestra el Mixer · 扫描发货单二维码');
+      if (!s.ok) { if (s.error !== 'Escaneo cancelado.') toast(s.error, true); return; }
+      const d = leerQRRemision(s.texto);
+      if (!d) return toast('Este QR no es de una remisión de la app.', true);
+      if ($$('[data-linea]', f).some(x => Number($('[name=rm]', x).value) === d.numero)) return toast(`La remisión ${d.numero} ya está en la lista.`, true);
+      let fila = $$('[data-linea]', f).find(x => !$('[name=rm]', x).value && !$('[name=m3]', x).value);
+      if (!fila) { $('#lineas', f).insertAdjacentHTML('beforeend', lineaHtml()); fila = $$('[data-linea]', f).pop(); }
+      $('[name=rm]', fila).value = d.numero; $('[name=m3]', fila).value = d.m3;
+      fila.dataset.mezcla = d.mezcla; fila.dataset.mixer = d.equipo; fila.dataset.categoria = d.categoria;
+      fila.insertAdjacentHTML('beforeend', `<small class="qr-leida" style="flex:1 0 100%;color:var(--gris)">Del QR: ${esc(d.equipo)} · ${esc(d.mezcla)}${d.categoria && d.categoria !== 'NA' ? ' · ' + esc(d.categoria) : ''}</small>`);
+      if (d.conductor && mixers.some(p => p.id === d.conductor)) f.mixer.value = d.conductor;
+      toast(`Remisión ${d.numero} leída · ${num(d.m3)} m³`);
+    });
     f.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const err = [];
-      const lineas = $$('[data-linea]', f).map(d => ({ remision: Number($('[name=rm]', d).value), m3: num($('[name=m3]', d).value) }))
+      const lineas = $$('[data-linea]', f).map(d => ({ remision: Number($('[name=rm]', d).value), m3: num($('[name=m3]', d).value),
+        ...(d.dataset.mezcla ? { mezcla: d.dataset.mezcla, mixer: d.dataset.mixer, categoria: d.dataset.categoria, por_qr: true } : {}) }))
         .filter(l => l.remision || l.m3);
       if (!f.equipo.value) err.push('Elija el Robojet.');
       const op = ops.find(x => x.id === f.operador.value);
@@ -623,7 +716,7 @@
       await Datos.poner('aplicaciones', {
         id: `${f.equipo.value}-${fin.replace(/\D/g, '')}-${Math.random().toString(36).slice(2, 6)}`,
         equipo: f.equipo.value, operador: op.id, guardia: op.guardia, labor: f.labor.value,
-        inicio: f.inicio.value || fin, fin, lineas, operador_mixer: f.mixer.value, firma_mixer: firma.dato(),
+        inicio: f.inicio.value || fin, fin, lineas, operador_mixer: f.mixer.value, firma_mixer: firma.dato(), fotos: fotos.filter(Boolean),
         observaciones: f.obs.value.trim() || null, entregada: false, app_version: APP_VERSION, maestro_version: M.version,
       });
       toast('Aplicación guardada · ciclo del Robojet cerrado');
@@ -829,9 +922,10 @@
         ${[['Labores', `${M.labores.filter(l => l.tipo === 'DESARROLLO').length} desarrollo · ${M.labores.filter(l => l.tipo === 'PANEL').length} paneles · ${L.laboresActivas.length} activas`, M.labores.length],
            ['Equipos', `${L.equiposDisponibles.length} operativos`, M.equipos.length],
            ['Personal activo', `${L.conductores.length} operadores de mixer · ${L.operadoresRobojet.length} de robojet · ${L.despachadores.length} despachadores`, L.conductores.length + L.operadoresRobojet.length + L.despachadores.length],
-           ['Mezclas', `${(M.mezclas || []).length ? (M.mezclas.filter(m => m.vaceado).length + ' de vaceado · ' + (M.categorias || []).length + ' categorías') : 'del catálogo de ejemplo'}`, (M.mezclas || []).length],
-           ['Áreas técnicas', listaAreas().map(a => a.nombre).join(' · '), listaAreas().length],
-           ['Contratistas', M.contratistas.map(c => c.id).join(' · '), M.contratistas.length]]
+           ['Mezclas', (M.mezclas || []).map(m => m.nombre).join(' · ') || 'sin mezclas en el maestro', (M.mezclas || []).length],
+           ['Categorías', (M.categorias || []).join(' · ') || 'sin categorías en el maestro', (M.categorias || []).length],
+           ['Solicitantes', listaAreas().map(a => a.nombre).join(' · '), listaAreas().length],
+           ['Usuarios', M.contratistas.map(c => c.id).join(' · '), M.contratistas.length]]
           .map(([n, d, c]) => `<li class="item" style="flex-direction:row;align-items:center"><div style="flex:1"><div class="item-t">${n}</div><div class="item-meta">${esc(d)}</div></div><b style="font-size:24px">${c}</b></li>`).join('')}
       </ul>` : ''}
       ${selectorPerfil()}
@@ -907,14 +1001,14 @@
     const lib = await Datos.todas('liberaciones');
     const hR = rem.map(r => ({
       'Remisión': r.numero, 'Fecha hora': r.fecha_hora.replace('T', ' '), 'Turno': r.turno, 'Guardia': r.guardia,
-      'Área técnica': areaN(r.area), 'Contratista': r.contratista, 'Labor': r.labor, 'Solicitante': r.solicitante || '', 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Categoría': r.categoria || '', 'Volumen m3': r.volumen_m3,
-      'Equipo': r.equipo, 'Conductor': r.conductor, 'Despachador': r.despachador, 'Estado': r.estado,
+      'Solicitante': areaN(r.area), 'Usuario': r.contratista, 'Labor': r.labor, 'Mezcla': mezclaN(r.mezcla), 'Cód. mezcla': r.mezcla, 'Categoría': r.categoria || '', 'Volumen m3': r.volumen_m3,
+      'Equipo': r.equipo, 'Conductor': r.conductor, 'Despachador': r.despachador || ((lib.find(l => l.remision_num === r.numero) || {}).despachador) || '', 'Registrado por': r.registrado_por, 'Cargo': r.cargo, 'Estado': r.estado,
       'Observaciones': r.observaciones, 'Versión maestro': r.maestro_version,
     }));
     const hL = lib.map(l => ({
-      'Remisión': l.remision_num, 'Fecha hora': l.fecha_hora.replace('T', ' '), 'Contratista': l.contratista, 'Labor': l.labor, 'Ciclo Mixer (min)': l.minutos_ciclo,
+      'Remisión': l.remision_num, 'Fecha hora': l.fecha_hora.replace('T', ' '), 'Usuario': l.contratista, 'Labor': l.labor, 'Ciclo Mixer (min)': l.minutos_ciclo,
       'Mezcla': mezclaN(l.mezcla), 'Cód. mezcla': l.mezcla, 'Recibido m3': l.cantidad_m3, 'Método': l.metodo, 'Min por m3': l.tiempo_min_por_m3,
-      'Operador': l.operador, 'Firma contratista': l.firma_contratista ? 'Sí' : 'No',
+      'Operador': l.operador, 'Firma usuario': l.firma_contratista ? 'Sí' : 'No',
       'Firma interventoría': l.firma_interventoria ? 'Sí' : 'No', 'Firma mandante': l.firma_mandante ? 'Sí' : 'No',
       'Observaciones': l.observaciones,
     }));
